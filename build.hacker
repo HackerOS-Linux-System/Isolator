@@ -1,1 +1,4 @@
+// python3
 
+> cd source-code
+> python3 -m nuitka --onefile main.py
