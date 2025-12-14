@@ -1,1 +1,34 @@
+[package]
+name = "isolator"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+nu-ansi-term = "0.50.0"
+termimad = "0.34.0"
+reedline = "0.26.0"
+clap_complete = "4.5.2"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+inquire = "0.7.5"
+indicatif = "0.17.8"
+comfy-table = "7.1.0"
+prettytable-rs = "0.10.0"
+tabled = "0.15.0"
+console = "0.15.8"
+owo-colors = "4.0.0"
+colored = "2.1.0"
+anstyle = "1.0.6"
+anstyle-parse = "0.2.4"
+nix = { version = "0.29.0", features = ["user", "mount", "sched", "process", "fs"] }
+seccomp-sys = "0.1.3"  # For seccomp filters
+directories = "5.0.1"  # For home dir handling
+anyhow = "1.0.82"  # Error handling
+log = "0.4.21"
+libc = "0.2.154"
+tempfile = "3.10.1"  # For temporary dirs
+
+# Note: Added "fs" feature to nix to enable sys::stat and unistd fs-related functions.
+# Updated termimad to 0.34.0 to resolve previous compilation issues.
 
