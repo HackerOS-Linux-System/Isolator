@@ -1,1 +1,6 @@
+default_rootfs = "wolfi_base"
+auto_gpu = true
+auto_gui = false
 
+[custom_commands]
+test = { command = "/bin/sh", args = ["-c", "echo Hello"], gpu = false, gui = false }
