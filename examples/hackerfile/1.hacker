@@ -1,1 +1,12 @@
-
+[
+from: "chainguard/wolfi-base"
+commands:
+  - apk add bash
+  - echo "Built"
+env:
+  KEY: value
+ports:
+  - "80"
+volumes:
+  - "/data"
+]
