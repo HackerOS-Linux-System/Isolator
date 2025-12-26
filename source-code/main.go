@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/otiai10/copy"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -58,12 +59,17 @@ func main() {
 	// Load global config if exists
 	loadConfig()
 
+	// Use pterm for styled header
+	pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgCyan)).WithTextStyle(pterm.NewStyle(pterm.FgBlack)).Println("Isolator - Lightweight Container Tool")
+
 	rootCmd := &cobra.Command{
 		Use:   "isolator",
 		Short: "A lightweight container tool similar to Podman but with less isolation for better performance",
 		Long: `Isolator is a custom container runtime that uses namespaces for lightweight isolation.
 It supports GPU and GUI applications out of the box. Defaults to Wolfi base images for lightness.
-Supports .toml config for customization and .hacker files for build-like definitions.`,
+Supports .toml config for customization and .hacker files for build-like definitions.
+		
+WARNING: GPU support provides full host GPU access - use with caution!`,
 	}
 
 	pullCmd := &cobra.Command{
@@ -105,6 +111,9 @@ Supports .toml config for customization and .hacker files for build-like definit
 			}
 			if !cmd.Flags().Changed("gui") {
 				guiFlag = globalConfig.AutoGUI
+			}
+			if gpuFlag {
+				pterm.Warning.Println("GPU enabled: Full host GPU access granted - potential security risks!")
 			}
 			runContainer(rootfsName, cmdArgs)
 		},
@@ -171,20 +180,20 @@ func loadConfig() {
 		if _, err := toml.DecodeFile(configFileName, &globalConfig); err != nil {
 			pterm.Warning.Printf("Error loading config: %v\n", err)
 		} else {
-			pterm.Info.Println("Loaded configuration from .isolator.toml")
+			pterm.Success.Println("Loaded configuration from .isolator.toml")
 		}
 	}
 }
 
 func showConfig() {
 	pterm.Info.Println("Current Configuration:")
-	fmt.Printf("Default Rootfs: %s\n", globalConfig.DefaultRootfs)
-	fmt.Printf("Auto GPU: %t\n", globalConfig.AutoGPU)
-	fmt.Printf("Auto GUI: %t\n", globalConfig.AutoGUI)
+	pterm.NewStyle(pterm.FgCyan).Printf("Default Rootfs: %s\n", globalConfig.DefaultRootfs)
+	pterm.NewStyle(pterm.FgCyan).Printf("Auto GPU: %t\n", globalConfig.AutoGPU)
+	pterm.NewStyle(pterm.FgCyan).Printf("Auto GUI: %t\n", globalConfig.AutoGUI)
 	if len(globalConfig.CustomCommands) > 0 {
 		pterm.Info.Println("Custom Commands:")
 		for name, cc := range globalConfig.CustomCommands {
-			fmt.Printf("- %s: %s %v (GPU: %t, GUI: %t)\n", name, cc.Command, cc.Args, cc.GPU, cc.GUI)
+			pterm.NewStyle(pterm.FgGreen).Printf("- %s: %s %v (GPU: %t, GUI: %t)\n", name, cc.Command, cc.Args, cc.GPU, cc.GUI)
 		}
 	}
 }
@@ -214,13 +223,20 @@ func buildFromHackerFile(dir string) {
 	// Pull base image
 	pullImage(hf.From)
 
-	// Create temp rootfs for building
-	rootfsName := sanitizeName(hf.From) + "-built"
+	// Copy base rootfs for building to avoid mutating original
+	baseRootfsName := sanitizeName(hf.From)
+	baseRootfsDir := filepath.Join(rootfsBaseDir, baseRootfsName)
+	rootfsName := baseRootfsName + "-built"
 	rootfsDir := filepath.Join(rootfsBaseDir, rootfsName)
-	if err := os.Rename(filepath.Join(rootfsBaseDir, sanitizeName(hf.From)), rootfsDir); err != nil {
-		pterm.Error.Printf("Error preparing build rootfs: %v\n", err)
+
+	pterm.Info.Printf("Copying base rootfs for build...\n")
+	copySpinner, _ := pterm.DefaultSpinner.Start("Copying rootfs...")
+	if err := copy.Copy(baseRootfsDir, rootfsDir); err != nil {
+		copySpinner.Fail("Error copying rootfs")
+		pterm.Error.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+	copySpinner.Success("Rootfs copied")
 
 	// Run build commands in container
 	for _, cmdStr := range hf.Commands {
@@ -228,19 +244,19 @@ func buildFromHackerFile(dir string) {
 		if len(cmdParts) == 0 {
 			continue
 		}
+		pterm.Info.Printf("Running build command: %s\n", cmdStr)
 		runContainer(rootfsName, cmdParts)
 	}
 
-	// Apply env, ports, volumes (for now, just log; can expand later)
-	pterm.Info.Printf("Environment: %v\n", hf.Env)
-	pterm.Info.Printf("Ports: %v\n", hf.Ports)
-	pterm.Info.Printf("Volumes: %v\n", hf.Volumes)
+	// Apply env, ports, volumes (log for now; expandable)
+	box := pterm.DefaultBox.WithTitle("Hackerfile Config")
+	boxContent := fmt.Sprintf("Environment: %v\nPorts: %v\nVolumes: %v", hf.Env, hf.Ports, hf.Volumes)
+	pterm.Println(box.Sprint(boxContent))
 
 	pterm.Success.Printf("Build complete for %s\n", rootfsName)
 }
 
 func pullImage(image string) {
-	// Same as before, with progress...
 	rootfsDir := filepath.Join(rootfsBaseDir, sanitizeName(image))
 
 	if err := os.MkdirAll(rootfsBaseDir, 0755); err != nil {
@@ -249,7 +265,7 @@ func pullImage(image string) {
 	}
 
 	pterm.Info.Printf("Pulling image %s...\n", image)
-	pullSpinner, _ := pterm.DefaultSpinner.Start("Pulling image...")
+	pullSpinner, _ := pterm.DefaultSpinner.WithStyle(pterm.NewStyle(pterm.FgCyan)).Start("Pulling image...")
 	pullCmd := exec.Command("podman", "pull", image)
 	if err := pullCmd.Run(); err != nil {
 		pullSpinner.Fail("Error pulling image")
@@ -259,7 +275,7 @@ func pullImage(image string) {
 	pullSpinner.Success("Image pulled")
 
 	tempContainer := "isolator-temp-" + sanitizeName(image)
-	createSpinner, _ := pterm.DefaultSpinner.Start("Creating temp container...")
+	createSpinner, _ := pterm.DefaultSpinner.WithStyle(pterm.NewStyle(pterm.FgCyan)).Start("Creating temp container...")
 	createCmd := exec.Command("podman", "create", "--name", tempContainer, image)
 	if err := createCmd.Run(); err != nil {
 		createSpinner.Fail("Error creating temp container")
@@ -272,7 +288,7 @@ func pullImage(image string) {
 	}()
 
 	tarFile := filepath.Join(rootfsBaseDir, sanitizeName(image)+".tar")
-	exportSpinner, _ := pterm.DefaultSpinner.Start("Exporting container...")
+	exportSpinner, _ := pterm.DefaultSpinner.WithStyle(pterm.NewStyle(pterm.FgCyan)).Start("Exporting container...")
 	exportCmd := exec.Command("podman", "export", tempContainer, "-o", tarFile)
 	if err := exportCmd.Run(); err != nil {
 		exportSpinner.Fail("Error exporting container")
@@ -298,7 +314,7 @@ func pullImage(image string) {
 	fi, _ := f.Stat()
 	totalSize := fi.Size()
 
-	progressBar, _ := pterm.DefaultProgressbar.WithTotal(int(totalSize)).WithTitle("Extracting rootfs").Start()
+	progressBar, _ := pterm.DefaultProgressbar.WithTotal(int(totalSize)).WithTitle("Extracting rootfs").WithBarStyle(pterm.NewStyle(pterm.FgGreen)).Start()
 	tr := tar.NewReader(&progressReader{reader: f, bar: progressBar})
 
 	for {
@@ -366,9 +382,10 @@ func runContainer(rootfsName string, cmdArgs []string) {
 	parentCmd.Stdout = os.Stdout
 	parentCmd.Stderr = os.Stderr
 	parentCmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:   syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		Cloneflags:                 syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 65536}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 65536}},
+		GidMappingsEnableSetgroups: false,
 	}
 
 	if err := parentCmd.Run(); err != nil {
@@ -397,16 +414,30 @@ func child(args []string) {
 	cmd := args[i]
 	cmdArgs := args[i+1:]
 
+	// Make root private to prevent mount propagation
+	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
+
 	must(syscall.Mount(rootfsDir, rootfsDir, "", syscall.MS_BIND, ""))
 	must(os.MkdirAll(filepath.Join(rootfsDir, "oldrootfs"), 0700))
 	must(syscall.PivotRoot(rootfsDir, filepath.Join(rootfsDir, "oldrootfs")))
 	must(os.Chdir("/"))
+
+	// Cleanup oldrootfs
+	must(syscall.Unmount("/oldrootfs", syscall.MNT_DETACH))
+	os.Remove("/oldrootfs")
 
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""))
 	must(syscall.Mount("sysfs", "/sys", "sysfs", 0, ""))
 	must(syscall.Mount("tmpfs", "/dev", "tmpfs", syscall.MS_NOSUID|syscall.MS_STRICTATIME, "mode=755"))
 	must(syscall.Mount("devpts", "/dev/pts", "devpts", 0, ""))
 	must(syscall.Mount("tmpfs", "/run", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_STRICTATIME, "mode=755"))
+
+	// Setup network loopback
+	pterm.Info.Println("Setting up loopback interface...")
+	netCmd := exec.Command("ip", "link", "set", "lo", "up")
+	if err := netCmd.Run(); err != nil {
+		pterm.Warning.Printf("Failed to setup loopback: %v\n", err)
+	}
 
 	if gpu {
 		pterm.Info.Println("Enabling GPU support...")
@@ -431,7 +462,7 @@ func child(args []string) {
 		env = os.Environ()
 	}
 
-	startSpinner, _ := pterm.DefaultSpinner.Start("Starting command...")
+	startSpinner, _ := pterm.DefaultSpinner.WithStyle(pterm.NewStyle(pterm.FgMagenta)).Start("Starting command...")
 	time.Sleep(1 * time.Second)
 	startSpinner.Success("Command started")
 
@@ -460,11 +491,13 @@ func listRootfs() {
 		return
 	}
 	pterm.Info.Println("Available rootfs:")
+	listItems := []pterm.BulletListItem{}
 	for _, file := range files {
 		if file.IsDir() {
-			pterm.BulletListPrinter{}.WithItems([]pterm.BulletListItem{{Level: 0, Text: file.Name()}}).Render()
+			listItems = append(listItems, pterm.BulletListItem{Level: 0, Text: file.Name()})
 		}
 	}
+	pterm.DefaultBulletList.WithItems(listItems).WithBulletStyle(pterm.NewStyle(pterm.FgYellow)).Render()
 }
 
 func removeRootfs(name string) {
