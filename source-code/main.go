@@ -11,26 +11,59 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	rootfsBaseDir = "/var/lib/isolator/rootfs"
-	defaultImage  = "chainguard/wolfi-base" // Integrate Wolfi as default or optional
+	rootfsBaseDir   = "/var/lib/isolator/rootfs"
+	defaultImage    = "chainguard/wolfi-base" // Wolfi integration
+	configFileName  = ".isolator.toml"
+	hackerFileName  = ".hacker"
+	hackerStart     = "["
+	hackerEnd       = "]"
 )
 
+type Config struct {
+	DefaultRootfs string `toml:"default_rootfs"`
+	AutoGPU       bool   `toml:"auto_gpu"`
+	AutoGUI       bool   `toml:"auto_gui"`
+	CustomCommands map[string]CustomCommand `toml:"custom_commands"`
+}
+
+type CustomCommand struct {
+	Command string   `toml:"command"`
+	Args    []string `toml:"args"`
+	GPU     bool     `toml:"gpu"`
+	GUI     bool     `toml:"gui"`
+}
+
+type HackerFile struct {
+	From     string            `yaml:"from"`
+	Commands []string          `yaml:"commands"`
+	Env      map[string]string `yaml:"env"`
+	Ports    []string          `yaml:"ports"`
+	Volumes  []string          `yaml:"volumes"`
+}
+
 var (
-	gpuFlag bool
-	guiFlag bool
+	globalConfig Config
+	gpuFlag      bool
+	guiFlag      bool
 )
 
 func main() {
+	// Load global config if exists
+	loadConfig()
+
 	rootCmd := &cobra.Command{
 		Use:   "isolator",
 		Short: "A lightweight container tool similar to Podman but with less isolation for better performance",
 		Long: `Isolator is a custom container runtime that uses namespaces for lightweight isolation.
-It supports GPU and GUI applications out of the box. Defaults to Wolfi base images for lightness.`,
+It supports GPU and GUI applications out of the box. Defaults to Wolfi base images for lightness.
+Supports .toml config for customization and .hacker files for build-like definitions.`,
 	}
 
 	pullCmd := &cobra.Command{
@@ -40,9 +73,19 @@ It supports GPU and GUI applications out of the box. Defaults to Wolfi base imag
 		Run: func(cmd *cobra.Command, args []string) {
 			image := args[0]
 			if image == "" {
-				image = defaultImage // Use Wolfi if no image specified
+				image = defaultImage
 			}
 			pullImage(image)
+		},
+	}
+
+	buildCmd := &cobra.Command{
+		Use:   "build [path_to_hackerfile_dir]",
+		Short: "Build rootfs from .hacker file (like Dockerfile but in custom format)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := args[0]
+			buildFromHackerFile(dir)
 		},
 	}
 
@@ -52,12 +95,44 @@ It supports GPU and GUI applications out of the box. Defaults to Wolfi base imag
 		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			rootfsName := args[0]
+			if rootfsName == "" && globalConfig.DefaultRootfs != "" {
+				rootfsName = globalConfig.DefaultRootfs
+			}
 			cmdArgs := args[1:]
+			// Override flags with global config if not set
+			if !cmd.Flags().Changed("gpu") {
+				gpuFlag = globalConfig.AutoGPU
+			}
+			if !cmd.Flags().Changed("gui") {
+				guiFlag = globalConfig.AutoGUI
+			}
 			runContainer(rootfsName, cmdArgs)
 		},
 	}
 	runCmd.Flags().BoolVar(&gpuFlag, "gpu", false, "Enable GPU support")
 	runCmd.Flags().BoolVar(&guiFlag, "gui", false, "Enable GUI support")
+
+	execCmd := &cobra.Command{
+		Use:   "exec [custom_command_name]",
+		Short: "Execute a custom command defined in .toml config",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			name := args[0]
+			if cc, ok := globalConfig.CustomCommands[name]; ok {
+				rootfsName := globalConfig.DefaultRootfs
+				if rootfsName == "" {
+					pterm.Error.Println("No default rootfs set in config.")
+					os.Exit(1)
+				}
+				gpuFlag = cc.GPU
+				guiFlag = cc.GUI
+				runContainer(rootfsName, append([]string{cc.Command}, cc.Args...))
+			} else {
+				pterm.Error.Printf("Custom command %s not found.\n", name)
+				os.Exit(1)
+			}
+		},
+	}
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -76,23 +151,103 @@ It supports GPU and GUI applications out of the box. Defaults to Wolfi base imag
 		},
 	}
 
-	rootCmd.AddCommand(pullCmd, runCmd, listCmd, rmCmd)
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Show current configuration",
+		Run: func(cmd *cobra.Command, args []string) {
+			showConfig()
+		},
+	}
+
+	rootCmd.AddCommand(pullCmd, buildCmd, runCmd, execCmd, listCmd, rmCmd, configCmd)
 	if err := rootCmd.Execute(); err != nil {
 		pterm.Error.Println(err)
 		os.Exit(1)
 	}
 }
 
+func loadConfig() {
+	if _, err := os.Stat(configFileName); err == nil {
+		if _, err := toml.DecodeFile(configFileName, &globalConfig); err != nil {
+			pterm.Warning.Printf("Error loading config: %v\n", err)
+		} else {
+			pterm.Info.Println("Loaded configuration from .isolator.toml")
+		}
+	}
+}
+
+func showConfig() {
+	pterm.Info.Println("Current Configuration:")
+	fmt.Printf("Default Rootfs: %s\n", globalConfig.DefaultRootfs)
+	fmt.Printf("Auto GPU: %t\n", globalConfig.AutoGPU)
+	fmt.Printf("Auto GUI: %t\n", globalConfig.AutoGUI)
+	if len(globalConfig.CustomCommands) > 0 {
+		pterm.Info.Println("Custom Commands:")
+		for name, cc := range globalConfig.CustomCommands {
+			fmt.Printf("- %s: %s %v (GPU: %t, GUI: %t)\n", name, cc.Command, cc.Args, cc.GPU, cc.GUI)
+		}
+	}
+}
+
+func buildFromHackerFile(dir string) {
+	hackerPath := filepath.Join(dir, hackerFileName)
+	data, err := os.ReadFile(hackerPath)
+	if err != nil {
+		pterm.Error.Printf("Error reading .hacker file: %v\n", err)
+		os.Exit(1)
+	}
+
+	content := string(data)
+	if !strings.HasPrefix(content, hackerStart) || !strings.HasSuffix(content, hackerEnd) {
+		pterm.Error.Println(".hacker file must start with [ and end with ]")
+		os.Exit(1)
+	}
+
+	// Extract inner content and parse as YAML
+	inner := strings.TrimSpace(content[len(hackerStart):len(content)-len(hackerEnd)])
+	var hf HackerFile
+	if err := yaml.Unmarshal([]byte(inner), &hf); err != nil {
+		pterm.Error.Printf("Error parsing YAML in .hacker: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Pull base image
+	pullImage(hf.From)
+
+	// Create temp rootfs for building
+	rootfsName := sanitizeName(hf.From) + "-built"
+	rootfsDir := filepath.Join(rootfsBaseDir, rootfsName)
+	if err := os.Rename(filepath.Join(rootfsBaseDir, sanitizeName(hf.From)), rootfsDir); err != nil {
+		pterm.Error.Printf("Error preparing build rootfs: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run build commands in container
+	for _, cmdStr := range hf.Commands {
+		cmdParts := strings.Fields(cmdStr)
+		if len(cmdParts) == 0 {
+			continue
+		}
+		runContainer(rootfsName, cmdParts)
+	}
+
+	// Apply env, ports, volumes (for now, just log; can expand later)
+	pterm.Info.Printf("Environment: %v\n", hf.Env)
+	pterm.Info.Printf("Ports: %v\n", hf.Ports)
+	pterm.Info.Printf("Volumes: %v\n", hf.Volumes)
+
+	pterm.Success.Printf("Build complete for %s\n", rootfsName)
+}
+
 func pullImage(image string) {
+	// Same as before, with progress...
 	rootfsDir := filepath.Join(rootfsBaseDir, sanitizeName(image))
 
-	// Create directories
 	if err := os.MkdirAll(rootfsBaseDir, 0755); err != nil {
 		pterm.Error.Printf("Error creating base dir: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Use podman to pull image with progress
 	pterm.Info.Printf("Pulling image %s...\n", image)
 	pullSpinner, _ := pterm.DefaultSpinner.Start("Pulling image...")
 	pullCmd := exec.Command("podman", "pull", image)
@@ -103,7 +258,6 @@ func pullImage(image string) {
 	}
 	pullSpinner.Success("Image pulled")
 
-	// Create a temporary container
 	tempContainer := "isolator-temp-" + sanitizeName(image)
 	createSpinner, _ := pterm.DefaultSpinner.Start("Creating temp container...")
 	createCmd := exec.Command("podman", "create", "--name", tempContainer, image)
@@ -117,7 +271,6 @@ func pullImage(image string) {
 		exec.Command("podman", "rm", "-f", tempContainer).Run()
 	}()
 
-	// Export to tar
 	tarFile := filepath.Join(rootfsBaseDir, sanitizeName(image)+".tar")
 	exportSpinner, _ := pterm.DefaultSpinner.Start("Exporting container...")
 	exportCmd := exec.Command("podman", "export", tempContainer, "-o", tarFile)
@@ -129,7 +282,6 @@ func pullImage(image string) {
 	exportSpinner.Success("Container exported")
 	defer os.Remove(tarFile)
 
-	// Extract tar to rootfs dir with progress bar
 	pterm.Info.Printf("Extracting to %s...\n", rootfsDir)
 	if err := os.MkdirAll(rootfsDir, 0755); err != nil {
 		pterm.Error.Printf("Error creating rootfs dir: %v\n", err)
@@ -143,7 +295,6 @@ func pullImage(image string) {
 	}
 	defer f.Close()
 
-	// Get tar size for progress
 	fi, _ := f.Stat()
 	totalSize := fi.Size()
 
@@ -187,7 +338,6 @@ func pullImage(image string) {
 				pterm.Error.Printf("Error creating symlink: %v\n", err)
 				os.Exit(1)
 			}
-		// Add more types if needed
 		}
 	}
 	progressBar.Stop()
@@ -197,11 +347,10 @@ func pullImage(image string) {
 func runContainer(rootfsName string, cmdArgs []string) {
 	rootfsDir := filepath.Join(rootfsBaseDir, rootfsName)
 	if _, err := os.Stat(rootfsDir); os.IsNotExist(err) {
-		pterm.Error.Printf("Rootfs %s not found. Pull it first.\n", rootfsName)
+		pterm.Error.Printf("Rootfs %s not found. Pull or build it first.\n", rootfsName)
 		os.Exit(1)
 	}
 
-	// Prepare child args: rootfsDir, gpu, gui, cmd, args...
 	childArgs := []string{"child", rootfsDir}
 	if gpuFlag {
 		childArgs = append(childArgs, "--gpu")
@@ -211,20 +360,15 @@ func runContainer(rootfsName string, cmdArgs []string) {
 	}
 	childArgs = append(childArgs, cmdArgs...)
 
-	// Run parent process
 	pterm.Info.Printf("Starting container %s...\n", rootfsName)
 	parentCmd := exec.Command("/proc/self/exe", childArgs...)
 	parentCmd.Stdin = os.Stdin
 	parentCmd.Stdout = os.Stdout
 	parentCmd.Stderr = os.Stderr
 	parentCmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET,
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
-		},
+		Cloneflags:   syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 	}
 
 	if err := parentCmd.Run(); err != nil {
@@ -253,32 +397,27 @@ func child(args []string) {
 	cmd := args[i]
 	cmdArgs := args[i+1:]
 
-	// Mount rootfs
 	must(syscall.Mount(rootfsDir, rootfsDir, "", syscall.MS_BIND, ""))
 	must(os.MkdirAll(filepath.Join(rootfsDir, "oldrootfs"), 0700))
 	must(syscall.PivotRoot(rootfsDir, filepath.Join(rootfsDir, "oldrootfs")))
 	must(os.Chdir("/"))
 
-	// Mount standard filesystems
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""))
 	must(syscall.Mount("sysfs", "/sys", "sysfs", 0, ""))
 	must(syscall.Mount("tmpfs", "/dev", "tmpfs", syscall.MS_NOSUID|syscall.MS_STRICTATIME, "mode=755"))
 	must(syscall.Mount("devpts", "/dev/pts", "devpts", 0, ""))
 	must(syscall.Mount("tmpfs", "/run", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_STRICTATIME, "mode=755"))
 
-	// GPU support
 	if gpu {
 		pterm.Info.Println("Enabling GPU support...")
-		devices := []string{"/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia0", "/dev/nvidia1"} // More devices
+		devices := []string{"/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia0", "/dev/nvidia1", "/dev/dri"}
 		for _, dev := range devices {
 			if _, err := os.Stat(dev); err == nil {
 				must(syscall.Mount(dev, dev, "bind", syscall.MS_BIND|syscall.MS_REC, ""))
 			}
 		}
-		// Assume rootfs has necessary libs; for Wolfi, ensure image has them
 	}
 
-	// GUI support
 	var env []string
 	if gui {
 		pterm.Info.Println("Enabling GUI support...")
@@ -288,14 +427,12 @@ func child(args []string) {
 		}
 		env = append(os.Environ(), "DISPLAY="+display)
 		must(syscall.Mount("/tmp/.X11-unix", "/tmp/.X11-unix", "bind", syscall.MS_BIND|syscall.MS_REC, ""))
-		// Additional X auth if needed, but assume xhost +local: on host
 	} else {
 		env = os.Environ()
 	}
 
-	// Run command with spinner for startup
 	startSpinner, _ := pterm.DefaultSpinner.Start("Starting command...")
-	time.Sleep(1 * time.Second) // Simulate startup
+	time.Sleep(1 * time.Second)
 	startSpinner.Success("Command started")
 
 	childCmd := exec.Command(cmd, cmdArgs...)
