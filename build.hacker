@@ -1,6 +1,5 @@
-// python3
+// golang
 
 > cd source-code
-> python3 -m nuitka --onefile main.py
-> sudo mv main.bin isolator
-> sudo chmod a+x isolator
+> go get isolator
+> go build
