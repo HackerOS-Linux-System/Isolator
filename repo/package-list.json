@@ -1,1 +1,47 @@
-
+[
+  {
+    "name": "vim",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "firefox-esr",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "zig",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "crystal",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "firefox",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "steam",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "git",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "visual-studio-code-bin",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "htop",
+    "distro": "opensuse",
+    "type": "cli"
+  }
+]
