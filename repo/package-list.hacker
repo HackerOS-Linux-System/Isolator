@@ -1,3 +1,7 @@
 [ 
-
+ crystal -> debian -> cli
+ zig -> fedora -> cli
+ steam -> archlinux -> gui
+ alacritty -> fedora -> gui
+ firefox -> fedora -> gui
 ]
