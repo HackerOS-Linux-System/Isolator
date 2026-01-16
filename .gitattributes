@@ -1,6 +1,6 @@
-*.yaml linguist-detectable=true
-*.yaml linguist-documentation=false
-*.yaml linguist-language=YAML
+*.json linguist-detectable=true
+*.json linguist-documentation=false
+*.json linguist-language=JSON
 
 *.odin linguist-detectable=true
 *.odin linguist-documentation=false
