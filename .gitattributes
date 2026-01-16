@@ -1,0 +1,7 @@
+*.yaml linguist-detectable=true
+*.yaml linguist-documentation=false
+*.yaml linguist-language=YAML
+
+*.odin linguist-detectable=true
+*.odin linguist-documentation=false
+*.odin linguist-language=ODIN
