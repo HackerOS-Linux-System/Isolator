@@ -40,6 +40,11 @@
     "type": "gui"
   },
   {
+    "name": "zen-browser-bin",
+    "distro": "archlinux",
+    "type": "gui"
+},
+  {
     "name": "htop",
     "distro": "opensuse",
     "type": "cli"
