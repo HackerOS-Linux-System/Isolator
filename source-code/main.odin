@@ -97,12 +97,14 @@ handle_init :: proc() {
         return
     }
     print_info("Initializing isolator...")
+    uid := os2.get_uid()
     // Create containers with shared home and dbus
     for cont in CONTAINERS {
         distro := cont
         if cont == "debian-testing" { distro = "debian:testing" }
         else if cont == "opensuse-tumbleweed" { distro = "opensuse/tumbleweed" }
-        cmd_args := []string{"create", "--name", cont, "--image", distro, "--home", os.get_env("HOME"), "--additional-flags", "--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID/bus"}
+        env_flag := fmt.tprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid)
+        cmd_args := []string{"create", "--name", cont, "--image", distro, "--home", os.get_env("HOME"), "--additional-flags", env_flag, "--yes"}
         if !exec_command(DISTROBOX_BIN, cmd_args) {
             print_error(fmt.tprintf("Failed to create container: %s", cont))
             return
@@ -344,7 +346,7 @@ exec_in_container :: proc(cont: string, cmd: string) -> bool {
 create_cli_wrapper :: proc(pkg: string, cont: string) {
     home_dir := os.get_env("HOME")
     wrapper_path := filepath.join([]string{home_dir, ".local/bin", pkg})
-    content := fmt.tprintf("#!/bin/sh\ndistrobox-enter %s -- %s \"$@\"", cont, pkg)
+    content := fmt.tprintf("#!/bin/sh\ndistrobox enter %s -- %s \"$@\"", cont, pkg)
     os.write_entire_file(wrapper_path, transmute([]u8)content)
     c_path := strings.clone_to_cstring(wrapper_path)
     defer delete(c_path)
@@ -360,7 +362,7 @@ remove_cli_wrapper :: proc(pkg: string) {
 create_gui_desktop :: proc(pkg: string, cont: string) {
     home_dir := os.get_env("HOME")
     desktop_path := filepath.join([]string{home_dir, ".local/share/applications", fmt.tprintf("%s.desktop", pkg)})
-    content := fmt.tprintf("[Desktop Entry]\nName=%s\nExec=distrobox-enter %s -- %s\nType=Application", pkg, cont, pkg)
+    content := fmt.tprintf("[Desktop Entry]\nName=%s\nExec=distrobox enter %s -- %s\nType=Application", pkg, cont, pkg)
     os.write_entire_file(desktop_path, transmute([]u8)content)
 }
 
