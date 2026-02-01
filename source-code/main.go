@@ -1,373 +1,483 @@
 package main
 
-import "core:fmt"
-import "core:os"
-import "core:os/os2"
-import "core:strings"
-import "core:path/filepath"
-import "core:encoding/json"
-import "core:sys/unix"
-import "core:time"
+import (
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "syscall"
+)
 
-ANSI_RESET :: "\x1b[0m"
-ANSI_BOLD :: "\x1b[1m"
-ANSI_RED :: "\x1b[31m"
-ANSI_GREEN :: "\x1b[32m"
-ANSI_YELLOW :: "\x1b[33m"
-ANSI_BLUE :: "\x1b[34m"
-ANSI_MAGENTA :: "\x1b[35m"
-ANSI_CYAN :: "\x1b[36m"
-ANSI_WHITE :: "\x1b[37m"
+// Stałe ANSI do kolorowania tekstu
+const (
+    ANSI_RESET   = "\x1b[0m"
+    ANSI_BOLD    = "\x1b[1m"
+    ANSI_RED     = "\x1b[31m"
+    ANSI_GREEN   = "\x1b[32m"
+    ANSI_YELLOW  = "\x1b[33m"
+    ANSI_BLUE    = "\x1b[34m"
+    ANSI_MAGENTA = "\x1b[35m"
+    ANSI_CYAN    = "\x1b[36m"
+    ANSI_WHITE   = "\x1b[37m"
+)
 
-REPO_URL :: "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
-LOCK_FILE :: ".config/isolator/lock"
-CONTAINERS :: []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
-DISTROBOX_BIN :: "distrobox"
-PODMAN_BIN :: "podman"
+// Konfiguracja
+const (
+    REPO_URL      = "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
+    LOCK_FILE     = ".config/isolator/lock"
+    DISTROBOX_BIN = "distrobox"
+)
 
-Package_Info :: struct {
-    name: string,
-    distro: string,
-    type: string, // cli or gui
+var CONTAINERS = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
+
+// Struktura pakietu (odpowiada JSON)
+type PackageInfo struct {
+    Name   string `json:"name"`
+    Distro string `json:"distro"`
+    Type   string `json:"type"` // cli lub gui
 }
 
-repo_packages: [dynamic]Package_Info
+// Zmienna globalna przechowująca listę pakietów
+var repoPackages []PackageInfo
 
-main :: proc() {
-    args := os.args[1:]
+func main() {
+    args := os.Args[1:]
     if len(args) == 0 {
-        print_help()
+        printHelp()
         return
     }
+
     cmd := args[0]
     switch cmd {
         case "init":
-            handle_init()
+            handleInit()
         case "install":
-            if len(args) < 2 { print_error("Missing package name"); return }
-            handle_install(args[1])
+            if len(args) < 2 {
+                printError("Missing package name")
+                return
+            }
+            handleInstall(args[1])
         case "remove":
-            if len(args) < 2 { print_error("Missing package name"); return }
-            handle_remove(args[1])
+            if len(args) < 2 {
+                printError("Missing package name")
+                return
+            }
+            handleRemove(args[1])
         case "update":
-            handle_update()
+            handleUpdate()
         case "refresh":
-            handle_refresh()
+            handleRefresh()
         case "upgrade":
-            handle_upgrade()
+            handleUpgrade()
         case "search":
-            if len(args) < 2 { print_error("Missing search term"); return }
-            handle_search(args[1])
-        case:
-            print_error("Unknown command")
-            print_help()
+            if len(args) < 2 {
+                printError("Missing search term")
+                return
+            }
+            handleSearch(args[1])
+        default:
+            printError("Unknown command")
+            printHelp()
     }
 }
 
-print_help :: proc() {
-    fmt.printf("%s%sIsolator CLI Tool%s\n", ANSI_BOLD, ANSI_CYAN, ANSI_RESET)
-    fmt.printf("Usage: isolator <command> [args]\n\n")
-    fmt.printf("%sCommands:%s\n", ANSI_YELLOW, ANSI_RESET)
-    fmt.printf(" init - Initialize isolator (create containers)\n")
-    fmt.printf(" install <pkg> - Install a package\n")
-    fmt.printf(" remove <pkg> - Remove a package\n")
-    fmt.printf(" update - Update everything\n")
-    fmt.printf(" refresh - Refresh repositories\n")
-    fmt.printf(" upgrade - Upgrade all possible (with checks)\n")
-    fmt.printf(" search <pkg> - Search for a package\n")
+func printHelp() {
+    fmt.Printf("%s%sIsolator CLI Tool%s\n", ANSI_BOLD, ANSI_CYAN, ANSI_RESET)
+    fmt.Println("Usage: isolator <command> [args]")
+    fmt.Println()
+    fmt.Printf("%sCommands:%s\n", ANSI_YELLOW, ANSI_RESET)
+    fmt.Println(" init - Initialize isolator (create containers)")
+    fmt.Println(" install <pkg> - Install a package")
+    fmt.Println(" remove <pkg> - Remove a package")
+    fmt.Println(" update - Update everything")
+    fmt.Println(" refresh - Refresh repositories")
+    fmt.Println(" upgrade - Upgrade all possible (with checks)")
+    fmt.Println(" search <pkg> - Search for a package")
 }
 
-print_error :: proc(msg: string) {
-    fmt.eprintf("%s%sError: %s%s\n", ANSI_BOLD, ANSI_RED, msg, ANSI_RESET)
+func printError(msg string) {
+    fmt.Fprintf(os.Stderr, "%s%sError: %s%s\n", ANSI_BOLD, ANSI_RED, msg, ANSI_RESET)
 }
 
-print_info :: proc(msg: string) {
-    fmt.printf("%s%sInfo: %s%s\n", ANSI_BOLD, ANSI_BLUE, msg, ANSI_RESET)
+func printInfo(msg string) {
+    fmt.Printf("%s%sInfo: %s%s\n", ANSI_BOLD, ANSI_BLUE, msg, ANSI_RESET)
 }
 
-print_success :: proc(msg: string) {
-    fmt.printf("%s%sSuccess: %s%s\n", ANSI_BOLD, ANSI_GREEN, msg, ANSI_RESET)
+func printSuccess(msg string) {
+    fmt.Printf("%s%sSuccess: %s%s\n", ANSI_BOLD, ANSI_GREEN, msg, ANSI_RESET)
 }
 
-handle_init :: proc() {
-    home_dir := os.get_env("HOME")
-    lock_path := filepath.join([]string{home_dir, LOCK_FILE})
-    if os.exists(lock_path) {
-        print_error("Isolator already initialized (lock file exists)")
+func getHomeDir() string {
+    home, err := os.UserHomeDir()
+    if err != nil {
+        return os.Getenv("HOME") // Fallback
+    }
+    return home
+}
+
+func handleInit() {
+    homeDir := getHomeDir()
+    lockPath := filepath.Join(homeDir, LOCK_FILE)
+
+    if _, err := os.Stat(lockPath); err == nil {
+        printError("Isolator already initialized (lock file exists)")
         return
     }
-    print_info("Initializing isolator...")
-    uid := os2.get_uid()
-    // Create containers with shared home and dbus
-    for cont in CONTAINERS {
+
+    printInfo("Initializing isolator...")
+    uid := os.Getuid()
+
+    // Tworzenie kontenerów
+    for _, cont := range CONTAINERS {
         distro := cont
-        if cont == "debian-testing" { distro = "debian:testing" }
-        else if cont == "opensuse-tumbleweed" { distro = "opensuse/tumbleweed" }
-        env_flag := fmt.tprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid)
-        cmd_args := []string{"create", "--name", cont, "--image", distro, "--home", os.get_env("HOME"), "--additional-flags", env_flag, "--yes"}
-        if !exec_command(DISTROBOX_BIN, cmd_args) {
-            print_error(fmt.tprintf("Failed to create container: %s", cont))
+        if cont == "debian-testing" {
+            distro = "debian:testing"
+        } else if cont == "opensuse-tumbleweed" {
+            distro = "opensuse/tumbleweed"
+        }
+
+        envFlag := fmt.Sprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid)
+        cmdArgs := []string{
+            "create",
+            "--name", cont,
+            "--image", distro,
+            "--home", homeDir,
+            "--additional-flags", envFlag,
+            "--yes",
+        }
+
+        if !execCommand(DISTROBOX_BIN, cmdArgs...) {
+            printError(fmt.Sprintf("Failed to create container: %s", cont))
             return
         }
-        print_success(fmt.tprintf("Created container: %s", cont))
+        printSuccess(fmt.Sprintf("Created container: %s", cont))
     }
-    // Create lock file
-    ok := os.write_entire_file(lock_path, transmute([]u8)string("initialized"))
-    if !ok {
-        print_error("Failed to create lock file")
+
+    // Tworzenie pliku blokady
+    if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+        printError("Failed to create config directory")
         return
     }
-    print_success("Initialization complete")
+    if err := os.WriteFile(lockPath, []byte("initialized"), 0644); err != nil {
+        printError("Failed to create lock file")
+        return
+    }
+
+    printSuccess("Initialization complete")
 }
 
-handle_install :: proc(pkg: string) {
-    if !load_repo() { return }
-    found: bool
-    info: Package_Info
-    for p in repo_packages {
-        if p.name == pkg {
+func handleInstall(pkg string) {
+    if !loadRepo(false) {
+        return
+    }
+
+    var found bool
+    var info PackageInfo
+
+    for _, p := range repoPackages {
+        if p.Name == pkg {
             found = true
             info = p
             break
         }
     }
+
     if !found {
-        print_error(fmt.tprintf("Package not found: %s", pkg))
+        printError(fmt.Sprintf("Package not found: %s", pkg))
         return
     }
-    print_info(fmt.tprintf("Installing %s from %s (%s)", pkg, info.distro, info.type))
-    // Install in container
-    installer: string
-    switch info.distro {
-        case "debian": installer = "apt install -y"
-        case "fedora": installer = "dnf install -y"
-        case "archlinux": installer = "pacman -S --noconfirm"
-        case "archlinux-yay": installer = "yay -S --noconfirm"
-        case "opensuse": installer = "zypper install -y"
+
+    printInfo(fmt.Sprintf("Installing %s from %s (%s)", pkg, info.Distro, info.Type))
+
+    var installer string
+    switch info.Distro {
+        case "debian":
+            installer = "apt install -y"
+        case "fedora":
+            installer = "dnf install -y"
+        case "archlinux":
+            installer = "pacman -S --noconfirm"
+        case "archlinux-yay":
+            installer = "yay -S --noconfirm"
+        case "opensuse":
+            installer = "zypper install -y"
+        default:
+            printError("Unknown distro type in package definition")
+            return
     }
-    cont_name := get_container_name(info.distro)
-    if cont_name == "" {
-        print_error("Unknown distro")
+
+    contName := getContainerName(info.Distro)
+    if contName == "" {
+        printError("Unknown distro mapping")
         return
     }
-    if !exec_in_container(cont_name, fmt.tprintf("%s %s", installer, pkg)) {
-        print_error("Installation failed")
+
+    // Instalacja w kontenerze
+    installCmd := fmt.Sprintf("%s %s", installer, pkg)
+    if !execInContainer(contName, installCmd) {
+        printError("Installation failed")
         return
     }
-    // Create wrapper or desktop
-    if info.type == "cli" {
-        create_cli_wrapper(pkg, cont_name)
-    } else if info.type == "gui" {
-        create_gui_desktop(pkg, cont_name)
+
+    // Tworzenie wrapperów
+    if info.Type == "cli" {
+        createCliWrapper(pkg, contName)
+    } else if info.Type == "gui" {
+        createGuiDesktop(pkg, contName)
     }
-    print_success("Installation complete")
+
+    printSuccess("Installation complete")
 }
 
-handle_remove :: proc(pkg: string) {
-    if !load_repo() { return }
-    found: bool
-    info: Package_Info
-    for p in repo_packages {
-        if p.name == pkg {
+func handleRemove(pkg string) {
+    if !loadRepo(false) {
+        return
+    }
+
+    var found bool
+    var info PackageInfo
+
+    for _, p := range repoPackages {
+        if p.Name == pkg {
             found = true
             info = p
             break
         }
     }
+
     if !found {
-        print_error(fmt.tprintf("Package not found: %s", pkg))
+        printError(fmt.Sprintf("Package not found: %s", pkg))
         return
     }
-    print_info(fmt.tprintf("Removing %s from %s", pkg, info.distro))
-    // Remove from container
-    remover: string
-    switch info.distro {
-        case "debian": remover = "apt remove -y"
-        case "fedora": remover = "dnf remove -y"
-        case "archlinux": remover = "pacman -R --noconfirm"
-        case "archlinux-yay": remover = "yay -R --noconfirm"
-        case "opensuse": remover = "zypper remove -y"
+
+    printInfo(fmt.Sprintf("Removing %s from %s", pkg, info.Distro))
+
+    var remover string
+    switch info.Distro {
+        case "debian":
+            remover = "apt remove -y"
+        case "fedora":
+            remover = "dnf remove -y"
+        case "archlinux":
+            remover = "pacman -R --noconfirm"
+        case "archlinux-yay":
+            remover = "yay -R --noconfirm"
+        case "opensuse":
+            remover = "zypper remove -y"
     }
-    cont_name := get_container_name(info.distro)
-    if cont_name == "" {
-        print_error("Unknown distro")
+
+    contName := getContainerName(info.Distro)
+    if contName == "" {
+        printError("Unknown distro")
         return
     }
-    if !exec_in_container(cont_name, fmt.tprintf("%s %s", remover, pkg)) {
-        print_error("Removal failed")
+
+    removeCmd := fmt.Sprintf("%s %s", remover, pkg)
+    if !execInContainer(contName, removeCmd) {
+        printError("Removal failed")
         return
     }
-    // Remove wrapper or desktop
-    if info.type == "cli" {
-        remove_cli_wrapper(pkg)
-    } else if info.type == "gui" {
-        remove_gui_desktop(pkg)
+
+    if info.Type == "cli" {
+        removeCliWrapper(pkg)
+    } else if info.Type == "gui" {
+        removeGuiDesktop(pkg)
     }
-    print_success("Removal complete")
+
+    printSuccess("Removal complete")
 }
 
-handle_update :: proc() {
-    print_info("Updating everything...")
-    for cont in CONTAINERS {
-        updater: string
+func handleUpdate() {
+    printInfo("Updating everything...")
+    for _, cont := range CONTAINERS {
+        var updater string
         switch cont {
-            case "debian-testing": updater = "apt update && apt upgrade -y"
-            case "fedora": updater = "dnf update -y"
-            case "archlinux": updater = "pacman -Syu --noconfirm"
-            case "opensuse-tumbleweed": updater = "zypper dup -y"
+            case "debian-testing":
+                updater = "apt update && apt upgrade -y"
+            case "fedora":
+                updater = "dnf update -y"
+            case "archlinux":
+                updater = "pacman -Syu --noconfirm"
+            case "opensuse-tumbleweed":
+                updater = "zypper dup -y"
         }
-        exec_in_container(cont, updater)
+        // Wykonujemy update, ale nie przerywamy pętli w razie błędu jednego kontenera
+        execInContainer(cont, updater)
     }
-    print_success("Update complete")
+    printSuccess("Update complete")
 }
 
-handle_refresh :: proc() {
-    print_info("Refreshing repositories...")
-    load_repo(true) // Force reload
-    print_success("Refresh complete")
+func handleRefresh() {
+    printInfo("Refreshing repositories...")
+    if loadRepo(true) {
+        printSuccess("Refresh complete")
+    }
 }
 
-handle_upgrade :: proc() {
-    print_info("Upgrading all...")
-    // Check apt location
-    if os.exists("/usr/bin/apt") {
-        print_error("System apt found in /usr/bin/ - potential conflict")
+func handleUpgrade() {
+    printInfo("Upgrading all...")
+
+    if _, err := os.Stat("/usr/bin/apt"); err == nil {
+        printError("System apt found in /usr/bin/ - potential conflict")
         return
     }
-    if !os.exists("/usr/lib/isolator/apt") {
-        print_error("Isolator apt not found in /usr/lib/isolator/apt")
+    if _, err := os.Stat("/usr/lib/isolator/apt"); os.IsNotExist(err) {
+        printError("Isolator apt not found in /usr/lib/isolator/apt")
         return
     }
-    // Run system upgrade
-    exec_command("sudo", []string{"/usr/lib/isolator/apt", "update"})
-    exec_command("sudo", []string{"/usr/lib/isolator/apt", "upgrade", "-y"})
-    // Upgrade containers
-    handle_update()
-    print_success("Upgrade complete")
+
+    // Upgrade systemu hosta
+    execCommand("sudo", "/usr/lib/isolator/apt", "update")
+    execCommand("sudo", "/usr/lib/isolator/apt", "upgrade", "-y")
+
+    // Upgrade kontenerów
+    handleUpdate()
+
+    printSuccess("Upgrade complete")
 }
 
-handle_search :: proc(term: string) {
-    if !load_repo() { return }
-    print_info(fmt.tprintf("Searching for %s...", term))
+func handleSearch(term string) {
+    if !loadRepo(false) {
+        return
+    }
+    printInfo(fmt.Sprintf("Searching for %s...", term))
     found := false
-    for p in repo_packages {
-        if strings.contains(p.name, term) {
-            fmt.printf("%s%s -> %s -> %s%s\n", ANSI_GREEN, p.name, p.distro, p.type, ANSI_RESET)
+    for _, p := range repoPackages {
+        if strings.Contains(p.Name, term) {
+            fmt.Printf("%s%s -> %s -> %s%s\n", ANSI_GREEN, p.Name, p.Distro, p.Type, ANSI_RESET)
             found = true
         }
     }
     if !found {
-        print_error("No packages found")
+        printError("No packages found")
     }
 }
 
-load_repo :: proc(force: bool = false) -> bool {
-    temp_file := "/tmp/package-list.json"
-    if force || !os.exists(temp_file) {
-        print_info("Downloading repo list...")
-        if !exec_command("curl", []string{"-L", "-o", temp_file, REPO_URL}) {
-            print_error("Failed to download repo list")
+// Pobiera i parsuje listę pakietów
+func loadRepo(force bool) bool {
+    tempFile := "/tmp/package-list.json"
+
+    _, err := os.Stat(tempFile)
+    if force || os.IsNotExist(err) {
+        printInfo("Downloading repo list...")
+
+        // Używamy natywnego HTTP clienta zamiast exec curl
+        resp, err := http.Get(REPO_URL)
+        if err != nil {
+            printError(fmt.Sprintf("Failed to download repo list: %v", err))
+            return false
+        }
+        defer resp.Body.Close()
+
+        data, err := io.ReadAll(resp.Body)
+        if err != nil {
+            printError("Failed to read response body")
+            return false
+        }
+
+        if err := os.WriteFile(tempFile, data, 0644); err != nil {
+            printError("Failed to write temp file")
             return false
         }
     }
-    data, ok := os.read_entire_file(temp_file)
-    if !ok {
-        print_error("Failed to read repo file")
+
+    fileData, err := os.ReadFile(tempFile)
+    if err != nil {
+        printError("Failed to read repo file")
         return false
     }
-    json_data, parse_err := json.parse(data[:])
-    if parse_err != .None {
-        print_error("Failed to parse JSON")
+
+    if err := json.Unmarshal(fileData, &repoPackages); err != nil {
+        printError("Failed to parse JSON")
         return false
     }
-    defer json.destroy_value(json_data)
-    arr, is_array := json_data.(json.Array)
-    if !is_array {
-        print_error("Repo JSON is not an array")
-        return false
-    }
-    clear(&repo_packages)
-    for val in arr {
-        obj, is_obj := val.(json.Object)
-        if !is_obj { continue }
-        name_val, has_name := obj["name"]
-        distro_val, has_distro := obj["distro"]
-        type_val, has_type := obj["type"]
-        if !has_name || !has_distro || !has_type { continue }
-        name, name_ok := name_val.(json.String)
-        distro, distro_ok := distro_val.(json.String)
-        typ, type_ok := type_val.(json.String)
-        if !name_ok || !distro_ok || !type_ok { continue }
-        append(&repo_packages, Package_Info{name = string(name), distro = string(distro), type = string(typ)})
-    }
+
     return true
 }
 
-get_container_name :: proc(distro: string) -> string {
+func getContainerName(distro string) string {
     switch distro {
-        case "debian": return "debian-testing"
-        case "fedora": return "fedora"
-        case "archlinux", "archlinux-yay": return "archlinux"
-        case "opensuse": return "opensuse-tumbleweed"
+        case "debian":
+            return "debian-testing"
+        case "fedora":
+            return "fedora"
+        case "archlinux", "archlinux-yay":
+            return "archlinux"
+        case "opensuse":
+            return "opensuse-tumbleweed"
     }
     return ""
 }
 
-exec_command :: proc(bin: string, args: []string) -> bool {
-    full_command := make([dynamic]string)
-    defer delete(full_command)
-    append(&full_command, bin)
-    for arg in args {
-        append(&full_command, arg)
-    }
-    desc := os2.Process_Desc{
-        command = full_command[:],
-        env = nil,
-        stdin = os2.stdin,
-        stdout = os2.stdout,
-        stderr = os2.stderr,
-    }
-    p, start_err := os2.process_start(desc)
-    if start_err != nil {
+func execCommand(bin string, args ...string) bool {
+    cmd := exec.Command(bin, args...)
+    cmd.Stdin = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+
+    if err := cmd.Run(); err != nil {
         return false
     }
-    state, wait_err := os2.process_wait(p, time.Duration(-1))
-    if wait_err != nil {
-        return false
-    }
-    return state.exit_code == 0
+    return true
 }
 
-exec_in_container :: proc(cont: string, cmd: string) -> bool {
+func execInContainer(cont string, cmd string) bool {
+    // distrobox enter <cont> -- sudo -S sh -c "<cmd>"
     args := []string{"enter", cont, "--", "sudo", "-S", "sh", "-c", cmd}
-    return exec_command(DISTROBOX_BIN, args)
+    return execCommand(DISTROBOX_BIN, args...)
 }
 
-create_cli_wrapper :: proc(pkg: string, cont: string) {
-    home_dir := os.get_env("HOME")
-    wrapper_path := filepath.join([]string{home_dir, ".local/bin", pkg})
-    content := fmt.tprintf("#!/bin/sh\ndistrobox enter %s -- %s \"$@\"", cont, pkg)
-    os.write_entire_file(wrapper_path, transmute([]u8)content)
-    c_path := strings.clone_to_cstring(wrapper_path)
-    defer delete(c_path)
-    unix.sys_chmod(c_path, 0o755)
+func createCliWrapper(pkg string, cont string) {
+    homeDir := getHomeDir()
+    binDir := filepath.Join(homeDir, ".local", "bin")
+
+    if err := os.MkdirAll(binDir, 0755); err != nil {
+        printError("Failed to create ~/.local/bin directory")
+        return
+    }
+
+    wrapperPath := filepath.Join(binDir, pkg)
+    content := fmt.Sprintf("#!/bin/sh\ndistrobox enter %s -- %s \"$@\"", cont, pkg)
+
+    if err := os.WriteFile(wrapperPath, []byte(content), 0755); err != nil {
+        printError("Failed to write CLI wrapper")
+        return
+    }
+
+    // Upewnij się, że jest wykonywalny (chociaż WriteFile z 0755 powinno zadziałać przy tworzeniu)
+    os.Chmod(wrapperPath, 0755)
 }
 
-remove_cli_wrapper :: proc(pkg: string) {
-    home_dir := os.get_env("HOME")
-    wrapper_path := filepath.join([]string{home_dir, ".local/bin", pkg})
-    os.remove(wrapper_path)
+func removeCliWrapper(pkg string) {
+    homeDir := getHomeDir()
+    wrapperPath := filepath.Join(homeDir, ".local", "bin", pkg)
+    os.Remove(wrapperPath)
 }
 
-create_gui_desktop :: proc(pkg: string, cont: string) {
-    home_dir := os.get_env("HOME")
-    desktop_path := filepath.join([]string{home_dir, ".local/share/applications", fmt.tprintf("%s.desktop", pkg)})
-    content := fmt.tprintf("[Desktop Entry]\nName=%s\nExec=distrobox enter %s -- %s\nType=Application", pkg, cont, pkg)
-    os.write_entire_file(desktop_path, transmute([]u8)content)
+func createGuiDesktop(pkg string, cont string) {
+    homeDir := getHomeDir()
+    appsDir := filepath.Join(homeDir, ".local", "share", "applications")
+
+    if err := os.MkdirAll(appsDir, 0755); err != nil {
+        printError("Failed to create ~/.local/share/applications directory")
+        return
+    }
+
+    desktopPath := filepath.Join(appsDir, fmt.Sprintf("%s.desktop", pkg))
+    content := fmt.Sprintf("[Desktop Entry]\nName=%s\nExec=distrobox enter %s -- %s\nType=Application", pkg, cont, pkg)
+
+    if err := os.WriteFile(desktopPath, []byte(content), 0644); err != nil {
+        printError("Failed to write GUI desktop file")
+        return
+    }
 }
 
-remove_gui_desktop :: proc(pkg: string) {
-    home_dir := os.get_env("HOME")
-    desktop_path := filepath.join([]string{home_dir, ".local/share/applications", fmt.tprintf("%s.desktop", pkg)})
-    os.remove(desktop_path)
+func removeGuiDesktop(pkg string) {
+    homeDir := getHomeDir()
+    desktopPath := filepath.Join(homeDir, ".local", "share", "applications", fmt.Sprintf("%s.desktop", pkg))
+    os.Remove(desktopPath)
 }
