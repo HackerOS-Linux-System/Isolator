@@ -348,5 +348,5 @@
     "name": "clojure",
     "distro": "archlinux-yay",
     "type": "cli"
-  },
+  }
 ]
