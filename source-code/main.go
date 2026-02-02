@@ -30,7 +30,6 @@ const (
 )
 
 var containers = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
-
 var repoPackages []PackageInfo
 
 var (
@@ -63,8 +62,13 @@ func execCommand(bin string, args []string) bool {
 	return err == nil
 }
 
-func execInContainer(cont string, cmdStr string) bool {
-	args := []string{"enter", cont, "--", "sudo", "-S", "sh", "-c", cmdStr}
+func execInContainer(cont string, cmdStr string, useSudo bool) bool {
+	args := []string{"enter", cont, "--"}
+	if useSudo {
+		args = append(args, "sudo", "-S", "sh", "-c", cmdStr)
+	} else {
+		args = append(args, "sh", "-c", cmdStr)
+	}
 	return execCommand(distroboxBin, args)
 }
 
@@ -110,14 +114,14 @@ func loadRepo(force bool) bool {
 
 func getContainerName(distro string) string {
 	switch distro {
-	case "debian":
-		return "debian-testing"
-	case "fedora":
-		return "fedora"
-	case "archlinux", "archlinux-yay":
-		return "archlinux"
-	case "opensuse":
-		return "opensuse-tumbleweed"
+		case "debian":
+			return "debian-testing"
+		case "fedora":
+			return "fedora"
+		case "archlinux", "archlinux-yay":
+			return "archlinux"
+		case "opensuse":
+			return "opensuse-tumbleweed"
 	}
 	return ""
 }
@@ -158,30 +162,6 @@ func handleInit() {
 	printSuccess("Initialization complete")
 }
 
-func exportApp(cont, pkg, typ string) bool {
-	var args []string
-	args = append(args, "export", "--container", cont)
-	if typ == "gui" {
-		args = append(args, "--app", pkg)
-	} else if typ == "cli" {
-		// Assuming the binary is in /usr/bin/<pkg>
-		binPath := fmt.Sprintf("/usr/bin/%s", pkg)
-		args = append(args, "--bin", binPath, "--export-path", "~/.local/bin")
-	}
-	return execCommand(distroboxBin, args)
-}
-
-func deleteExport(pkg, typ string) bool {
-	var args []string
-	args = append(args, "export", "--delete")
-	if typ == "gui" {
-		args = append(args, "--app", pkg)
-	} else if typ == "cli" {
-		args = append(args, "--bin", pkg)
-	}
-	return execCommand(distroboxBin, args)
-}
-
 func handleInstall(pkg string) {
 	if !loadRepo(false) {
 		return
@@ -200,19 +180,19 @@ func handleInstall(pkg string) {
 	printInfo(fmt.Sprintf("Installing %s from %s (%s)", pkg, info.Distro, info.Type))
 	var installer string
 	switch info.Distro {
-	case "debian":
-		installer = "apt install -y"
-	case "fedora":
-		installer = "dnf install -y"
-	case "archlinux":
-		installer = "pacman -S --noconfirm"
-	case "archlinux-yay":
-		installer = "yay -S --noconfirm"
-	case "opensuse":
-		installer = "zypper install -y"
-	default:
-		printError("Unknown distro")
-		return
+		case "debian":
+			installer = "apt install -y"
+		case "fedora":
+			installer = "dnf install -y"
+		case "archlinux":
+			installer = "pacman -S --noconfirm"
+		case "archlinux-yay":
+			installer = "yay -S --noconfirm"
+		case "opensuse":
+			installer = "zypper install -y"
+		default:
+			printError("Unknown distro")
+			return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
@@ -220,11 +200,18 @@ func handleInstall(pkg string) {
 		return
 	}
 	installCmd := fmt.Sprintf("%s %s", installer, pkg)
-	if !execInContainer(contName, installCmd) {
+	if !execInContainer(contName, installCmd, true) {
 		printError("Installation failed")
 		return
 	}
-	if !exportApp(contName, pkg, info.Type) {
+	var exportCmd string
+	if info.Type == "gui" {
+		exportCmd = fmt.Sprintf("distrobox-export --app %s", pkg)
+	} else if info.Type == "cli" {
+		binPath := fmt.Sprintf("/usr/bin/%s", pkg)
+		exportCmd = fmt.Sprintf("distrobox-export --bin %s --export-path ~/.local/bin", binPath)
+	}
+	if !execInContainer(contName, exportCmd, false) {
 		printError("Export failed")
 		return
 	}
@@ -249,32 +236,41 @@ func handleRemove(pkg string) {
 	printInfo(fmt.Sprintf("Removing %s from %s", pkg, info.Distro))
 	var remover string
 	switch info.Distro {
-	case "debian":
-		remover = "apt remove -y"
-	case "fedora":
-		remover = "dnf remove -y"
-	case "archlinux":
-		remover = "pacman -R --noconfirm"
-	case "archlinux-yay":
-		remover = "yay -R --noconfirm"
-	case "opensuse":
-		remover = "zypper remove -y"
-	default:
-		printError("Unknown distro")
-		return
+		case "debian":
+			remover = "apt remove -y"
+		case "fedora":
+			remover = "dnf remove -y"
+		case "archlinux":
+			remover = "pacman -R --noconfirm"
+		case "archlinux-yay":
+			remover = "yay -R --noconfirm"
+		case "opensuse":
+			remover = "zypper remove -y"
+		default:
+			printError("Unknown distro")
+			return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
 		printError("Unknown distro")
 		return
 	}
-	removeCmd := fmt.Sprintf("%s %s", remover, pkg)
-	if !execInContainer(contName, removeCmd) {
-		printError("Removal failed")
+	// First delete export
+	var deleteCmd string
+	if info.Type == "gui" {
+		deleteCmd = fmt.Sprintf("distrobox-export --delete --app %s", pkg)
+	} else if info.Type == "cli" {
+		binPath := fmt.Sprintf("/usr/bin/%s", pkg)
+		deleteCmd = fmt.Sprintf("distrobox-export --delete --bin %s", binPath)
+	}
+	if !execInContainer(contName, deleteCmd, false) {
+		printError("Delete export failed")
 		return
 	}
-	if !deleteExport(pkg, info.Type) {
-		printError("Delete export failed")
+	// Then remove package
+	removeCmd := fmt.Sprintf("%s %s", remover, pkg)
+	if !execInContainer(contName, removeCmd, true) {
+		printError("Removal failed")
 		return
 	}
 	printSuccess("Removal complete")
@@ -286,19 +282,19 @@ func handleUpdate() {
 	for _, cont := range containers {
 		var updater string
 		switch cont {
-		case "debian-testing":
-			updater = "apt update && apt upgrade -y"
-		case "fedora":
-			updater = "dnf update -y"
-		case "archlinux":
-			updater = "pacman -Syu --noconfirm"
-		case "opensuse-tumbleweed":
-			updater = "zypper dup -y"
+			case "debian-testing":
+				updater = "apt update && apt upgrade -y"
+			case "fedora":
+				updater = "dnf update -y"
+			case "archlinux":
+				updater = "pacman -Syu --noconfirm"
+			case "opensuse-tumbleweed":
+				updater = "zypper dup -y"
 		}
 		wg.Add(1)
 		go func(c string, u string) {
 			defer wg.Done()
-			execInContainer(c, u)
+			execInContainer(c, u, true)
 		}(cont, updater)
 	}
 	wg.Wait()
@@ -352,31 +348,30 @@ func main() {
 			cmd.Help()
 		},
 	}
-
 	rootCmd.AddCommand(
 		&cobra.Command{
 			Use:   "init",
 			Short: "Initialize isolator (create containers)",
-			Args:  cobra.NoArgs,
-			Run: func(cmd *cobra.Command, args []string) {
-				handleInit()
-			},
+			   Args:  cobra.NoArgs,
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleInit()
+			   },
 		},
 		&cobra.Command{
 			Use:   "install <pkg>",
 			Short: "Install a package",
 			Args:  cobra.ExactArgs(1),
-			Run: func(cmd *cobra.Command, args []string) {
-				handleInstall(args[0])
-			},
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleInstall(args[0])
+			   },
 		},
 		&cobra.Command{
 			Use:   "remove <pkg>",
 			Short: "Remove a package",
 			Args:  cobra.ExactArgs(1),
-			Run: func(cmd *cobra.Command, args []string) {
-				handleRemove(args[0])
-			},
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleRemove(args[0])
+			   },
 		},
 		&cobra.Command{
 			Use:   "update",
@@ -397,21 +392,20 @@ func main() {
 		&cobra.Command{
 			Use:   "upgrade",
 			Short: "Upgrade all possible (with checks)",
-			Args:  cobra.NoArgs,
-			Run: func(cmd *cobra.Command, args []string) {
-				handleUpgrade()
-			},
+			   Args:  cobra.NoArgs,
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleUpgrade()
+			   },
 		},
 		&cobra.Command{
 			Use:   "search <pkg>",
 			Short: "Search for a package",
 			Args:  cobra.ExactArgs(1),
-			Run: func(cmd *cobra.Command, args []string) {
-				handleSearch(args[0])
-			},
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleSearch(args[0])
+			   },
 		},
 	)
-
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
