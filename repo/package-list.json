@@ -70,8 +70,13 @@
     "type": "cli"
   },
   {
-    "name": "rust",
-    "distro": "archlinux",
+    "name": "rustc",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "cargo",
+    "distro": "fedora",
     "type": "cli"
   },
   {
