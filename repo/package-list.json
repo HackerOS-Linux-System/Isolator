@@ -45,8 +45,13 @@
     "type": "cli"
   },
   {
-    "name": "firefox-esr",
-    "distro": "debian",
+    "name": "odin",
+    "distro": "archlinux-yay",
+    "type": "cli"
+  },
+  {
+    "name": "discord",
+    "distro": "archlinux-yay",
     "type": "gui"
   },
   {
@@ -93,10 +98,255 @@
     "name": "zen-browser-bin",
     "distro": "archlinux",
     "type": "gui"
-},
+  },
   {
     "name": "htop",
     "distro": "opensuse",
     "type": "cli"
-  }
+  },
+  {
+    "name": "gimp",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "firefox-esr",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "bat",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "alacritty",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "kitty",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "wezterm",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-terminal",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "ripgrep",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "fzf",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "fd",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "lazygit",
+    "distro": "archlinux-yay",
+    "type": "cli"
+  },
+  {
+    "name": "obs-studio",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "mpv",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "eza",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "zoxide",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "obsidian",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "helix",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "peazip",
+    "distro": "opensuse",
+    "type": "gui"
+  },
+  {
+    "name": "gping",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "dog",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "just",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "jq",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "httpie",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "postman-bin",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "nmap",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "dbeaver",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "brave-bin",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "vivaldi",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "google-chrome-stable",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "postgresql",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "lutris",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "heroic-games-launcher-bin",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "protonplus",
+    "distro": "archlinux-yay",
+    "type": "gui"
+  },
+  {
+    "name": "lua",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "love",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "elixir",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "flutter",
+    "distro": "archlinux-yay",
+    "type": "cli"
+  },
+  {
+    "name": "nim",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "python3-venv",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "virt-manager",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "stow",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "corectrl",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "telegram-desktop",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "scala",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "ocaml",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "opam",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gfortan",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "vlang",
+    "distro": "archlinux-yay",
+    "type": "cli"
+  },
+  {
+    "name": "clojure",
+    "distro": "archlinux-yay",
+    "type": "cli"
+  },
 ]
