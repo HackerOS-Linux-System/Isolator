@@ -25,8 +25,48 @@
     "type": "cli"
   },
   {
-    "name": "archlinux",
-    "distro": "rust",
+    "name": "pip",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "npm",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "golang",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "julia",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "firefox-esr",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "R",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "neowofetch",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "fastfetch",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "rust",
+    "distro": "archlinux",
     "type": "cli"
   },
   {
