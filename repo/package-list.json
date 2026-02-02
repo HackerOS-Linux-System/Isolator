@@ -375,11 +375,6 @@
     "type": "cli"
   },
   {
-    "name": "inkscape",
-    "distro": "opensuse",
-    "type": "gui"
-  },
-  {
     "name": "blender",
     "distro": "archlinux",
     "type": "gui"
