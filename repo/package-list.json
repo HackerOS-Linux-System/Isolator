@@ -348,5 +348,15 @@
     "name": "clojure",
     "distro": "archlinux-yay",
     "type": "cli"
+  },
+  {
+    "name": "cmake",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "starship",
+    "distro": "archlinux",
+    "type": "cli"
   }
 ]
