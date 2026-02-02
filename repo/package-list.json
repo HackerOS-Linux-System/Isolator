@@ -110,11 +110,6 @@
     "type": "gui"
   },
   {
-    "name": "firefox-esr",
-    "distro": "debian",
-    "type": "gui"
-  },
-  {
     "name": "bat",
     "distro": "debian",
     "type": "cli"
