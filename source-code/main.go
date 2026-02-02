@@ -8,263 +8,225 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
-// Konfiguracja
-const (
-	REPO_URL      = "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
-	LOCK_FILE     = ".config/isolator/lock"
-	DISTROBOX_BIN = "distrobox"
-)
-
-var CONTAINERS = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
-
-// Struktura pakietu (odpowiada JSON)
 type PackageInfo struct {
 	Name   string `json:"name"`
 	Distro string `json:"distro"`
-	Type   string `json:"type"` // cli lub gui
+	Type   string `json:"type"`
 }
 
-// Zmienna globalna przechowująca listę pakietów
-var repoPackages []PackageInfo
-
-// Lip Gloss styles
-var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF"))
-	errorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF0000"))
-	successStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00"))
-	infoStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0000FF"))
-	warnStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFF00"))
-	docStyle     = lipgloss.NewStyle().Margin(1, 2)
+const (
+	repoURL      = "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
+	lockFile     = ".config/isolator/lock"
+	distroboxBin = "distrobox"
+	tempRepoFile = "/tmp/package-list.json"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "isolator",
-	Short: "Isolator CLI Tool",
-	Run: func(cmd *cobra.Command, args []string) {
-		printStyledHelp()
-	},
-}
+var containers = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
 
-var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Initialize isolator (create containers)",
-	Run: func(cmd *cobra.Command, args []string) {
-		handleInit()
-	},
-}
+var repoPackages []PackageInfo
 
-var installCmd = &cobra.Command{
-	Use:   "install <pkg>",
-	Short: "Install a package",
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) < 1 {
-			printError("Missing package name")
-			return
-		}
-		handleInstall(args[0])
-	},
-}
-
-var removeCmd = &cobra.Command{
-	Use:   "remove <pkg>",
-	Short: "Remove a package",
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) < 1 {
-			printError("Missing package name")
-			return
-		}
-		handleRemove(args[0])
-	},
-}
-
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update everything",
-	Run: func(cmd *cobra.Command, args []string) {
-		handleUpdate()
-	},
-}
-
-var refreshCmd = &cobra.Command{
-	Use:   "refresh",
-	Short: "Refresh repositories",
-	Run: func(cmd *cobra.Command, args []string) {
-		handleRefresh()
-	},
-}
-
-var upgradeCmd = &cobra.Command{
-	Use:   "upgrade",
-	Short: "Upgrade all possible (with checks)",
-	Run: func(cmd *cobra.Command, args []string) {
-		handleUpgrade()
-	},
-}
-
-var searchCmd = &cobra.Command{
-	Use:   "search <term>",
-	Short: "Search for a package",
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) < 1 {
-			printError("Missing search term")
-			return
-		}
-		handleSearch(args[0])
-	},
-}
-
-func init() {
-	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(installCmd)
-	rootCmd.AddCommand(removeCmd)
-	rootCmd.AddCommand(updateCmd)
-	rootCmd.AddCommand(refreshCmd)
-	rootCmd.AddCommand(upgradeCmd)
-	rootCmd.AddCommand(searchCmd)
-}
-
-func main() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
-}
-
-func printStyledHelp() {
-	fmt.Println(titleStyle.Render("Isolator CLI Tool"))
-	fmt.Println("Usage: isolator <command> [args]")
-	fmt.Println()
-	fmt.Println(warnStyle.Render("Commands:"))
-	fmt.Println("  init              - Initialize isolator (create containers)")
-	fmt.Println("  install <pkg>     - Install a package")
-	fmt.Println("  remove <pkg>      - Remove a package")
-	fmt.Println("  update            - Update everything")
-	fmt.Println("  refresh           - Refresh repositories")
-	fmt.Println("  upgrade           - Upgrade all possible (with checks)")
-	fmt.Println("  search <term>     - Search for a package")
-}
+var (
+	boldStyle    = lipgloss.NewStyle().Bold(true)
+	errorStyle   = boldStyle.Copy().Foreground(lipgloss.Color("1")) // red
+	successStyle = boldStyle.Copy().Foreground(lipgloss.Color("2")) // green
+	infoStyle    = boldStyle.Copy().Foreground(lipgloss.Color("4")) // blue
+	warnStyle    = boldStyle.Copy().Foreground(lipgloss.Color("3")) // yellow
+	cyanStyle    = boldStyle.Copy().Foreground(lipgloss.Color("6")) // cyan
+)
 
 func printError(msg string) {
-	fmt.Fprintln(os.Stderr, errorStyle.Render("Error: "+msg))
+	fmt.Println(errorStyle.Render("Error: " + msg))
 }
 
 func printInfo(msg string) {
-	fmt.Println(infoStyle.Render("Info: "+msg))
+	fmt.Println(infoStyle.Render("Info: " + msg))
 }
 
 func printSuccess(msg string) {
-	fmt.Println(successStyle.Render("Success: "+msg))
+	fmt.Println(successStyle.Render("Success: " + msg))
 }
 
-func getHomeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return os.Getenv("HOME") // Fallback
+func execCommand(bin string, args []string) bool {
+	cmd := exec.Command(bin, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	return err == nil
+}
+
+func execInContainer(cont string, cmdStr string) bool {
+	args := []string{"enter", cont, "--", "sudo", "-S", "sh", "-c", cmdStr}
+	return execCommand(distroboxBin, args)
+}
+
+func loadRepo(force bool) bool {
+	_, statErr := os.Stat(tempRepoFile)
+	if !force && statErr == nil {
+		// exists, no force
+	} else {
+		printInfo("Downloading repo list...")
+		resp, err := http.Get(repoURL)
+		if err != nil {
+			printError(fmt.Sprintf("Failed to download repo list: %s", err.Error()))
+			return false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			printError(fmt.Sprintf("Failed to download: status %d", resp.StatusCode))
+			return false
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			printError("Failed to read response body")
+			return false
+		}
+		err = os.WriteFile(tempRepoFile, body, 0644)
+		if err != nil {
+			printError("Failed to write repo file")
+			return false
+		}
 	}
-	return home
+	data, err := os.ReadFile(tempRepoFile)
+	if err != nil {
+		printError("Failed to read repo file")
+		return false
+	}
+	err = json.Unmarshal(data, &repoPackages)
+	if err != nil {
+		printError("Failed to parse JSON")
+		return false
+	}
+	return true
+}
+
+func getContainerName(distro string) string {
+	switch distro {
+	case "debian":
+		return "debian-testing"
+	case "fedora":
+		return "fedora"
+	case "archlinux", "archlinux-yay":
+		return "archlinux"
+	case "opensuse":
+		return "opensuse-tumbleweed"
+	}
+	return ""
 }
 
 func handleInit() {
-	homeDir := getHomeDir()
-	lockPath := filepath.Join(homeDir, LOCK_FILE)
+	home := os.Getenv("HOME")
+	if home == "" {
+		printError("HOME environment variable not set")
+		return
+	}
+	lockPath := filepath.Join(home, lockFile)
 	if _, err := os.Stat(lockPath); err == nil {
 		printError("Isolator already initialized (lock file exists)")
 		return
 	}
 	printInfo("Initializing isolator...")
 	uid := os.Getuid()
-	// Tworzenie kontenerów
-	for _, cont := range CONTAINERS {
+	for _, cont := range containers {
 		distro := cont
 		if cont == "debian-testing" {
 			distro = "debian:testing"
 		} else if cont == "opensuse-tumbleweed" {
 			distro = "opensuse/tumbleweed"
 		}
-		envFlag := fmt.Sprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid)
-		cmdArgs := []string{
-			"create",
-			"--name", cont,
-			"--image", distro,
-			"--home", homeDir,
-			"--additional-flags", envFlag,
-			"--yes",
-		}
-		if !execCommand(DISTROBOX_BIN, cmdArgs...) {
+		envFlag := fmt.Sprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus", strconv.Itoa(uid))
+		args := []string{"create", "--name", cont, "--image", distro, "--home", home, "--additional-flags", envFlag}
+		if !execCommand(distroboxBin, args) {
 			printError(fmt.Sprintf("Failed to create container: %s", cont))
 			return
 		}
 		printSuccess(fmt.Sprintf("Created container: %s", cont))
 	}
-	// Tworzenie pliku blokady
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
-		printError("Failed to create config directory")
-		return
-	}
-	if err := os.WriteFile(lockPath, []byte("initialized"), 0644); err != nil {
+	err := os.WriteFile(lockPath, []byte("initialized"), 0644)
+	if err != nil {
 		printError("Failed to create lock file")
 		return
 	}
 	printSuccess("Initialization complete")
 }
 
+func exportApp(cont, pkg, typ string) bool {
+	var args []string
+	args = append(args, "export", "--container", cont)
+	if typ == "gui" {
+		args = append(args, "--app", pkg)
+	} else if typ == "cli" {
+		// Assuming the binary is in /usr/bin/<pkg>
+		binPath := fmt.Sprintf("/usr/bin/%s", pkg)
+		args = append(args, "--bin", binPath, "--export-path", "~/.local/bin")
+	}
+	return execCommand(distroboxBin, args)
+}
+
+func deleteExport(pkg, typ string) bool {
+	var args []string
+	args = append(args, "export", "--delete")
+	if typ == "gui" {
+		args = append(args, "--app", pkg)
+	} else if typ == "cli" {
+		args = append(args, "--bin", pkg)
+	}
+	return execCommand(distroboxBin, args)
+}
+
 func handleInstall(pkg string) {
 	if !loadRepo(false) {
 		return
 	}
-	var found bool
-	var info PackageInfo
-	for _, p := range repoPackages {
-		if p.Name == pkg {
-			found = true
-			info = p
+	var info *PackageInfo
+	for i := range repoPackages {
+		if repoPackages[i].Name == pkg {
+			info = &repoPackages[i]
 			break
 		}
 	}
-	if !found {
+	if info == nil {
 		printError(fmt.Sprintf("Package not found: %s", pkg))
 		return
 	}
 	printInfo(fmt.Sprintf("Installing %s from %s (%s)", pkg, info.Distro, info.Type))
 	var installer string
 	switch info.Distro {
-		case "debian":
-			installer = "apt install -y"
-		case "fedora":
-			installer = "dnf install -y"
-		case "archlinux":
-			installer = "pacman -S --noconfirm"
-		case "archlinux-yay":
-			installer = "yay -S --noconfirm"
-		case "opensuse":
-			installer = "zypper install -y"
-		default:
-			printError("Unknown distro type in package definition")
-			return
+	case "debian":
+		installer = "apt install -y"
+	case "fedora":
+		installer = "dnf install -y"
+	case "archlinux":
+		installer = "pacman -S --noconfirm"
+	case "archlinux-yay":
+		installer = "yay -S --noconfirm"
+	case "opensuse":
+		installer = "zypper install -y"
+	default:
+		printError("Unknown distro")
+		return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
-		printError("Unknown distro mapping")
+		printError("Unknown distro")
 		return
 	}
-	// Instalacja w kontenerze
 	installCmd := fmt.Sprintf("%s %s", installer, pkg)
 	if !execInContainer(contName, installCmd) {
 		printError("Installation failed")
 		return
 	}
-	// Tworzenie wrapperów
-	if info.Type == "cli" {
-		createCliWrapper(pkg, contName)
-	} else if info.Type == "gui" {
-		createGuiDesktop(pkg, contName)
+	if !exportApp(contName, pkg, info.Type) {
+		printError("Export failed")
+		return
 	}
 	printSuccess("Installation complete")
 }
@@ -273,32 +235,33 @@ func handleRemove(pkg string) {
 	if !loadRepo(false) {
 		return
 	}
-	var found bool
-	var info PackageInfo
-	for _, p := range repoPackages {
-		if p.Name == pkg {
-			found = true
-			info = p
+	var info *PackageInfo
+	for i := range repoPackages {
+		if repoPackages[i].Name == pkg {
+			info = &repoPackages[i]
 			break
 		}
 	}
-	if !found {
+	if info == nil {
 		printError(fmt.Sprintf("Package not found: %s", pkg))
 		return
 	}
 	printInfo(fmt.Sprintf("Removing %s from %s", pkg, info.Distro))
 	var remover string
 	switch info.Distro {
-		case "debian":
-			remover = "apt remove -y"
-		case "fedora":
-			remover = "dnf remove -y"
-		case "archlinux":
-			remover = "pacman -R --noconfirm"
-		case "archlinux-yay":
-			remover = "yay -R --noconfirm"
-		case "opensuse":
-			remover = "zypper remove -y"
+	case "debian":
+		remover = "apt remove -y"
+	case "fedora":
+		remover = "dnf remove -y"
+	case "archlinux":
+		remover = "pacman -R --noconfirm"
+	case "archlinux-yay":
+		remover = "yay -R --noconfirm"
+	case "opensuse":
+		remover = "zypper remove -y"
+	default:
+		printError("Unknown distro")
+		return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
@@ -310,39 +273,42 @@ func handleRemove(pkg string) {
 		printError("Removal failed")
 		return
 	}
-	if info.Type == "cli" {
-		removeCliWrapper(pkg)
-	} else if info.Type == "gui" {
-		removeGuiDesktop(pkg)
+	if !deleteExport(pkg, info.Type) {
+		printError("Delete export failed")
+		return
 	}
 	printSuccess("Removal complete")
 }
 
 func handleUpdate() {
 	printInfo("Updating everything...")
-	for _, cont := range CONTAINERS {
+	var wg sync.WaitGroup
+	for _, cont := range containers {
 		var updater string
 		switch cont {
-			case "debian-testing":
-				updater = "apt update && apt upgrade -y"
-			case "fedora":
-				updater = "dnf update -y"
-			case "archlinux":
-				updater = "pacman -Syu --noconfirm"
-			case "opensuse-tumbleweed":
-				updater = "zypper dup -y"
+		case "debian-testing":
+			updater = "apt update && apt upgrade -y"
+		case "fedora":
+			updater = "dnf update -y"
+		case "archlinux":
+			updater = "pacman -Syu --noconfirm"
+		case "opensuse-tumbleweed":
+			updater = "zypper dup -y"
 		}
-		// Wykonujemy update, ale nie przerywamy pętli w razie błędu jednego kontenera
-		execInContainer(cont, updater)
+		wg.Add(1)
+		go func(c string, u string) {
+			defer wg.Done()
+			execInContainer(c, u)
+		}(cont, updater)
 	}
+	wg.Wait()
 	printSuccess("Update complete")
 }
 
 func handleRefresh() {
 	printInfo("Refreshing repositories...")
-	if loadRepo(true) {
-		printSuccess("Refresh complete")
-	}
+	loadRepo(true)
+	printSuccess("Refresh complete")
 }
 
 func handleUpgrade() {
@@ -355,48 +321,10 @@ func handleUpgrade() {
 		printError("Isolator apt not found in /usr/lib/isolator/apt")
 		return
 	}
-	// Upgrade systemu hosta
-	execCommand("sudo", "/usr/lib/isolator/apt", "update")
-	execCommand("sudo", "/usr/lib/isolator/apt", "upgrade", "-y")
-	// Upgrade kontenerów
+	execCommand("sudo", []string{"/usr/lib/isolator/apt", "update"})
+	execCommand("sudo", []string{"/usr/lib/isolator/apt", "upgrade", "-y"})
 	handleUpdate()
 	printSuccess("Upgrade complete")
-}
-
-type item struct {
-	title, desc string
-}
-
-func (i item) Title() string       { return i.title }
-func (i item) Description() string { return i.desc }
-func (i item) FilterValue() string { return i.title }
-
-type model struct {
-	list list.Model
-}
-
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-		case tea.KeyMsg:
-			if msg.String() == "ctrl+c" || msg.String() == "q" || msg.String() == "esc" {
-				return m, tea.Quit
-			}
-		case tea.WindowSizeMsg:
-			h, v := docStyle.GetFrameSize()
-			m.list.SetSize(msg.Width-h, msg.Height-v)
-	}
-
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	return m, cmd
-}
-
-func (m model) View() string {
-	return docStyle.Render(m.list.View())
 }
 
 func handleSearch(term string) {
@@ -404,133 +332,87 @@ func handleSearch(term string) {
 		return
 	}
 	printInfo(fmt.Sprintf("Searching for %s...", term))
-	var items []list.Item
+	found := false
 	for _, p := range repoPackages {
-		if strings.Contains(strings.ToLower(p.Name), strings.ToLower(term)) {
-			items = append(items, item{title: p.Name, desc: fmt.Sprintf("%s (%s)", p.Distro, p.Type)})
+		if strings.Contains(p.Name, term) {
+			fmt.Println(successStyle.Render(fmt.Sprintf("%s -> %s -> %s", p.Name, p.Distro, p.Type)))
+			found = true
 		}
 	}
-	if len(items) == 0 {
+	if !found {
 		printError("No packages found")
-		return
 	}
-	delegate := list.NewDefaultDelegate()
-	// Customize delegate styles with lipgloss if desired
-	m := model{list: list.New(items, delegate, 0, 0)}
-	m.list.Title = fmt.Sprintf("Search results for '%s'", term)
-	p := tea.NewProgram(&m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		printError("Failed to run search UI")
+}
+
+func main() {
+	var rootCmd = &cobra.Command{
+		Use:   "isolator <command> [args]",
+		Short: cyanStyle.Render("Isolator CLI Tool"),
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.Help()
+		},
+	}
+
+	rootCmd.AddCommand(
+		&cobra.Command{
+			Use:   "init",
+			Short: "Initialize isolator (create containers)",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleInit()
+			},
+		},
+		&cobra.Command{
+			Use:   "install <pkg>",
+			Short: "Install a package",
+			Args:  cobra.ExactArgs(1),
+			Run: func(cmd *cobra.Command, args []string) {
+				handleInstall(args[0])
+			},
+		},
+		&cobra.Command{
+			Use:   "remove <pkg>",
+			Short: "Remove a package",
+			Args:  cobra.ExactArgs(1),
+			Run: func(cmd *cobra.Command, args []string) {
+				handleRemove(args[0])
+			},
+		},
+		&cobra.Command{
+			Use:   "update",
+			Short: "Update everything",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleUpdate()
+			},
+		},
+		&cobra.Command{
+			Use:   "refresh",
+			Short: "Refresh repositories",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleRefresh()
+			},
+		},
+		&cobra.Command{
+			Use:   "upgrade",
+			Short: "Upgrade all possible (with checks)",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleUpgrade()
+			},
+		},
+		&cobra.Command{
+			Use:   "search <pkg>",
+			Short: "Search for a package",
+			Args:  cobra.ExactArgs(1),
+			Run: func(cmd *cobra.Command, args []string) {
+				handleSearch(args[0])
+			},
+		},
+	)
+
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
-}
-
-// Pobiera i parsuje listę pakietów
-func loadRepo(force bool) bool {
-	tempFile := "/tmp/package-list.json"
-	_, err := os.Stat(tempFile)
-	if force || os.IsNotExist(err) {
-		printInfo("Downloading repo list...")
-		// Używamy natywnego HTTP clienta zamiast exec curl
-		resp, err := http.Get(REPO_URL)
-		if err != nil {
-			printError(fmt.Sprintf("Failed to download repo list: %v", err))
-			return false
-		}
-		defer resp.Body.Close()
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			printError("Failed to read response body")
-			return false
-		}
-		if err := os.WriteFile(tempFile, data, 0644); err != nil {
-			printError("Failed to write temp file")
-			return false
-		}
-	}
-	fileData, err := os.ReadFile(tempFile)
-	if err != nil {
-		printError("Failed to read repo file")
-		return false
-	}
-	if err := json.Unmarshal(fileData, &repoPackages); err != nil {
-		printError("Failed to parse JSON")
-		return false
-	}
-	return true
-}
-
-func getContainerName(distro string) string {
-	switch distro {
-		case "debian":
-			return "debian-testing"
-		case "fedora":
-			return "fedora"
-		case "archlinux", "archlinux-yay":
-			return "archlinux"
-		case "opensuse":
-			return "opensuse-tumbleweed"
-	}
-	return ""
-}
-
-func execCommand(bin string, args ...string) bool {
-	cmd := exec.Command(bin, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
-}
-
-func execInContainer(cont string, cmd string) bool {
-	// distrobox enter <cont> -- sudo -S sh -c "<cmd>"
-	args := []string{"enter", cont, "--", "sudo", "-S", "sh", "-c", cmd}
-	return execCommand(DISTROBOX_BIN, args...)
-}
-
-func createCliWrapper(pkg string, cont string) {
-	homeDir := getHomeDir()
-	binDir := filepath.Join(homeDir, ".local", "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		printError("Failed to create ~/.local/bin directory")
-		return
-	}
-	wrapperPath := filepath.Join(binDir, pkg)
-	content := fmt.Sprintf("#!/bin/sh\ndistrobox enter %s -- %s \"$@\"", cont, pkg)
-	if err := os.WriteFile(wrapperPath, []byte(content), 0755); err != nil {
-		printError("Failed to write CLI wrapper")
-		return
-	}
-	// Upewnij się, że jest wykonywalny (chociaż WriteFile z 0755 powinno zadziałać przy tworzeniu)
-	os.Chmod(wrapperPath, 0755)
-}
-
-func removeCliWrapper(pkg string) {
-	homeDir := getHomeDir()
-	wrapperPath := filepath.Join(homeDir, ".local", "bin", pkg)
-	os.Remove(wrapperPath)
-}
-
-func createGuiDesktop(pkg string, cont string) {
-	homeDir := getHomeDir()
-	appsDir := filepath.Join(homeDir, ".local", "share", "applications")
-	if err := os.MkdirAll(appsDir, 0755); err != nil {
-		printError("Failed to create ~/.local/share/applications directory")
-		return
-	}
-	desktopPath := filepath.Join(appsDir, fmt.Sprintf("%s.desktop", pkg))
-	content := fmt.Sprintf("[Desktop Entry]\nName=%s\nExec=distrobox enter %s -- %s\nType=Application", pkg, cont, pkg)
-	if err := os.WriteFile(desktopPath, []byte(content), 0644); err != nil {
-		printError("Failed to write GUI desktop file")
-		return
-	}
-}
-
-func removeGuiDesktop(pkg string) {
-	homeDir := getHomeDir()
-	desktopPath := filepath.Join(homeDir, ".local", "share", "applications", fmt.Sprintf("%s.desktop", pkg))
-	os.Remove(desktopPath)
 }
