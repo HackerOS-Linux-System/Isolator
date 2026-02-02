@@ -20,6 +20,16 @@
     "type": "cli"
   },
   {
+    "name": "python3",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "archlinux",
+    "distro": "rust",
+    "type": "cli"
+  },
+  {
     "name": "firefox",
     "distro": "fedora",
     "type": "gui"
