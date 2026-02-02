@@ -21,12 +21,12 @@
   },
   {
     "name": "python3",
-    "distro": "fedora",
+    "distro": "debian",
     "type": "cli"
   },
   {
     "name": "pip",
-    "distro": "fedora",
+    "distro": "debian",
     "type": "cli"
   },
   {
@@ -35,8 +35,8 @@
     "type": "cli"
   },
   {
-    "name": "golang",
-    "distro": "debian",
+    "name": "go",
+    "distro": "archlinux",
     "type": "cli"
   },
   {
