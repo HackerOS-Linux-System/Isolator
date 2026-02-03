@@ -29,7 +29,8 @@ const (
 	tempRepoFile = "/tmp/package-list.json"
 )
 
-var containers = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed"}
+var containers = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed", "ubuntu", "slackware"}
+
 var repoPackages []PackageInfo
 
 var (
@@ -118,10 +119,14 @@ func getContainerName(distro string) string {
 			return "debian-testing"
 		case "fedora":
 			return "fedora"
-		case "archlinux", "archlinux-yay":
+		case "archlinux":
 			return "archlinux"
 		case "opensuse":
 			return "opensuse-tumbleweed"
+		case "ubuntu":
+			return "ubuntu"
+		case "slackware":
+			return "slackware"
 	}
 	return ""
 }
@@ -145,6 +150,10 @@ func handleInit() {
 			distro = "debian:testing"
 		} else if cont == "opensuse-tumbleweed" {
 			distro = "opensuse/tumbleweed"
+		} else if cont == "ubuntu" {
+			distro = "ubuntu"
+		} else if cont == "slackware" {
+			distro = "slackware64-current"
 		}
 		envFlag := fmt.Sprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus", strconv.Itoa(uid))
 		args := []string{"create", "--name", cont, "--image", distro, "--home", home, "--additional-flags", envFlag}
@@ -186,10 +195,12 @@ func handleInstall(pkg string) {
 			installer = "dnf install -y"
 		case "archlinux":
 			installer = "pacman -S --noconfirm"
-		case "archlinux-yay":
-			installer = "yay -S --noconfirm"
 		case "opensuse":
 			installer = "zypper install -y"
+		case "ubuntu":
+			installer = "apt install -y"
+		case "slackware":
+			installer = "slackpkg install"
 		default:
 			printError("Unknown distro")
 			return
@@ -242,10 +253,12 @@ func handleRemove(pkg string) {
 			remover = "dnf remove -y"
 		case "archlinux":
 			remover = "pacman -R --noconfirm"
-		case "archlinux-yay":
-			remover = "yay -R --noconfirm"
 		case "opensuse":
 			remover = "zypper remove -y"
+		case "ubuntu":
+			remover = "apt remove -y"
+		case "slackware":
+			remover = "slackpkg remove"
 		default:
 			printError("Unknown distro")
 			return
@@ -290,6 +303,10 @@ func handleUpdate() {
 				updater = "pacman -Syu --noconfirm"
 			case "opensuse-tumbleweed":
 				updater = "zypper dup -y"
+			case "ubuntu":
+				updater = "apt update && apt upgrade -y"
+			case "slackware":
+				updater = "slackpkg update && slackpkg upgrade-all"
 		}
 		wg.Add(1)
 		go func(c string, u string) {
