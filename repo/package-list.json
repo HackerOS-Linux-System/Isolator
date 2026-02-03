@@ -45,16 +45,6 @@
     "type": "cli"
   },
   {
-    "name": "odin",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
-    "name": "discord",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "R",
     "distro": "fedora",
     "type": "cli"
@@ -93,11 +83,6 @@
     "name": "git",
     "distro": "fedora",
     "type": "cli"
-  },
-  {
-    "name": "visual-studio-code-bin",
-    "distro": "archlinux-yay",
-    "type": "gui"
   },
   {
     "name": "zen-browser-bin",
@@ -155,11 +140,6 @@
     "type": "cli"
   },
   {
-    "name": "lazygit",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "obs-studio",
     "distro": "fedora",
     "type": "gui"
@@ -178,11 +158,6 @@
     "name": "zoxide",
     "distro": "debian",
     "type": "cli"
-  },
-  {
-    "name": "obsidian",
-    "distro": "archlinux-yay",
-    "type": "gui"
   },
   {
     "name": "helix",
@@ -220,11 +195,6 @@
     "type": "cli"
   },
   {
-    "name": "postman-bin",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "nmap",
     "distro": "opensuse",
     "type": "cli"
@@ -232,16 +202,6 @@
   {
     "name": "dbeaver",
     "distro": "archlinux",
-    "type": "gui"
-  },
-  {
-    "name": "brave-bin",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
-    "name": "vivaldi",
-    "distro": "archlinux-yay",
     "type": "gui"
   },
   {
@@ -260,16 +220,6 @@
     "type": "gui"
   },
   {
-    "name": "heroic-games-launcher-bin",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
-    "name": "protonplus",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "lua",
     "distro": "fedora",
     "type": "cli"
@@ -282,11 +232,6 @@
   {
     "name": "elixir",
     "distro": "archlinux",
-    "type": "cli"
-  },
-  {
-    "name": "flutter",
-    "distro": "archlinux-yay",
     "type": "cli"
   },
   {
@@ -337,16 +282,6 @@
   {
     "name": "gfortan",
     "distro": "debian",
-    "type": "cli"
-  },
-  {
-    "name": "vlang",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
-    "name": "clojure",
-    "distro": "archlinux-yay",
     "type": "cli"
   },
   {
@@ -495,11 +430,6 @@
     "type": "cli"
   },
   {
-    "name": "composer",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "mysql",
     "distro": "debian",
     "type": "cli"
@@ -575,11 +505,6 @@
     "type": "cli"
   },
   {
-    "name": "packer",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "vagrant",
     "distro": "opensuse",
     "type": "cli"
@@ -620,11 +545,6 @@
     "type": "cli"
   },
   {
-    "name": "mkdocs",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "sphinx",
     "distro": "debian",
     "type": "cli"
@@ -642,11 +562,6 @@
   {
     "name": "plantuml",
     "distro": "opensuse",
-    "type": "cli"
-  },
-  {
-    "name": "mermaid-cli",
-    "distro": "archlinux-yay",
     "type": "cli"
   },
   {
@@ -685,38 +600,13 @@
     "type": "gui"
   },
   {
-    "name": "calibre",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
-    "name": "signal-desktop",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "element-desktop",
     "distro": "archlinux",
     "type": "gui"
   },
   {
-    "name": "slack-desktop",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "zoom",
     "distro": "fedora",
-    "type": "gui"
-  },
-  {
-    "name": "teams",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
-    "name": "spotify",
-    "distro": "archlinux-yay",
     "type": "gui"
   },
   {
@@ -775,11 +665,6 @@
     "type": "cli"
   },
   {
-    "name": "proton-ge-custom-bin",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "mangohud",
     "distro": "archlinux",
     "type": "cli"
@@ -788,11 +673,6 @@
     "name": "gamemode",
     "distro": "fedora",
     "type": "cli"
-  },
-  {
-    "name": "minecraft-launcher",
-    "distro": "archlinux-yay",
-    "type": "gui"
   },
   {
     "name": "prismlauncher",
@@ -885,11 +765,6 @@
     "type": "gui"
   },
   {
-    "name": "pamac",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "yast2",
     "distro": "opensuse",
     "type": "gui"
@@ -967,11 +842,6 @@
   {
     "name": "bmon",
     "distro": "archlinux",
-    "type": "cli"
-  },
-  {
-    "name": "slurm",
-    "distro": "archlinux-yay",
     "type": "cli"
   },
   {
@@ -1095,11 +965,6 @@
     "type": "cli"
   },
   {
-    "name": "i2p",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "proxychains",
     "distro": "debian",
     "type": "cli"
@@ -1130,16 +995,6 @@
     "type": "cli"
   },
   {
-    "name": "kafka",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
-    "name": "zookeeper",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "elasticsearch",
     "distro": "opensuse",
     "type": "cli"
@@ -1158,11 +1013,6 @@
     "name": "prometheus",
     "distro": "archlinux",
     "type": "cli"
-  },
-  {
-    "name": "grafana",
-    "distro": "archlinux-yay",
-    "type": "gui"
   },
   {
     "name": "zabbix-server",
@@ -1220,16 +1070,6 @@
     "type": "cli"
   },
   {
-    "name": "flamegraph",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
-    "name": "masscan",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
     "name": "zmap",
     "distro": "opensuse",
     "type": "cli"
@@ -1255,16 +1095,6 @@
     "type": "cli"
   },
   {
-    "name": "metasploit",
-    "distro": "archlinux-yay",
-    "type": "cli"
-  },
-  {
-    "name": "burpsuite",
-    "distro": "archlinux-yay",
-    "type": "gui"
-  },
-  {
     "name": "zap",
     "distro": "debian",
     "type": "gui"
@@ -1277,11 +1107,6 @@
   {
     "name": "sqlmap",
     "distro": "archlinux",
-    "type": "cli"
-  },
-  {
-    "name": "nmap-vulners",
-    "distro": "archlinux-yay",
     "type": "cli"
   },
   {
@@ -1320,8 +1145,423 @@
     "type": "cli"
   },
   {
-    "name": "samhain",
-    "distro": "archlinux-yay",
+    "name": "tree",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "ncdu",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "mc",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "screen",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "byobu",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "exfat-utils",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "gedit",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "nautilus",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "rhythmbox",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "totem",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "brasero",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "simple-scan",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "seahorse",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "remmina",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "deja-dup",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "baobab",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "cheese",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-calculator",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-calendar",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-weather",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-maps",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-contacts",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-logs",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-disk-utility",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-font-viewer",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-screenshot",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-system-monitor",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "gnome-text-editor",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "seamonkey",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "xpdf",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "gkrellm",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "gv",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "xine",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "xmms",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "audacious",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "gftp",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "pan",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "sylpheed",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "bluefish",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "nedit",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "abiword",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "gnumeric",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "dia",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "xfig",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "xsane",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "k3b",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "siag",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "slackpkg",
+    "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "sbopkg",
+    "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "fluxbox",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "blackbox",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "windowmaker",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "fvwm",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "icewm",
+    "distro": "slackware",
+    "type": "gui"
+  },
+  {
+    "name": "btop",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "duf",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "bottom",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "nushell",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "fdupes",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "hyperfine",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "sd",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "tokei",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "dust",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "exa",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "rg",
+    "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "fd-find",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "choose",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "tealdeer",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "navi",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "broot",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "yazi",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "lf",
+    "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "nnn",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "ranger",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "vifm",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "onefetch",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "neofetch",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "pfetch",
+    "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "hyfetch",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "cpufetch",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gpufetch",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "zenith",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "glances",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "bpytop",
+    "distro": "slackware",
     "type": "cli"
   }
 ]
