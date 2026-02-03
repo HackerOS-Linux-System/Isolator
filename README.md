@@ -3,4 +3,4 @@
 
 ## How working
 
-### Using in Atomic Edition - Containered
+### Using in Atomic Edition
