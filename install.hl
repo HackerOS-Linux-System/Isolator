@@ -1,2 +1,5 @@
 // curl
-> 
+
+> sudo curl -L https://github.com/HackerOS-Linux-System/Isolator/releases/download/v0.5/isolator -o /usr/bin/isolator
+> sudo chmod a+x /usr/bin/isolator
+> isolator init
