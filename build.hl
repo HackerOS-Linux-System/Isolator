@@ -1,4 +1,5 @@
-// odin
+// golang
 
 > cd source-code
-> odin build .
+> go get isolator
+> go build
