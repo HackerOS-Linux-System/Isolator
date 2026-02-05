@@ -17,9 +17,10 @@ import (
 )
 
 type PackageInfo struct {
-	Name   string `json:"name"`
-	Distro string `json:"distro"`
-	Type   string `json:"type"`
+	Name   string   `json:"name"`
+	Distro string   `json:"distro"`
+	Type   string   `json:"type"`
+	Libs   []string `json:"libs,omitempty"`
 }
 
 const (
@@ -30,7 +31,6 @@ const (
 )
 
 var containers = []string{"archlinux", "fedora", "debian-testing", "opensuse-tumbleweed", "ubuntu", "slackware"}
-
 var repoPackages []PackageInfo
 
 var (
@@ -115,18 +115,18 @@ func loadRepo(force bool) bool {
 
 func getContainerName(distro string) string {
 	switch distro {
-		case "debian":
-			return "debian-testing"
-		case "fedora":
-			return "fedora"
-		case "archlinux":
-			return "archlinux"
-		case "opensuse":
-			return "opensuse-tumbleweed"
-		case "ubuntu":
-			return "ubuntu"
-		case "slackware":
-			return "slackware"
+	case "debian":
+		return "debian-testing"
+	case "fedora":
+		return "fedora"
+	case "archlinux":
+		return "archlinux"
+	case "opensuse":
+		return "opensuse-tumbleweed"
+	case "ubuntu":
+		return "ubuntu"
+	case "slackware":
+		return "slackware"
 	}
 	return ""
 }
@@ -189,28 +189,33 @@ func handleInstall(pkg string) {
 	printInfo(fmt.Sprintf("Installing %s from %s (%s)", pkg, info.Distro, info.Type))
 	var installer string
 	switch info.Distro {
-		case "debian":
-			installer = "apt install -y"
-		case "fedora":
-			installer = "dnf install -y"
-		case "archlinux":
-			installer = "pacman -S --noconfirm"
-		case "opensuse":
-			installer = "zypper install -y"
-		case "ubuntu":
-			installer = "apt install -y"
-		case "slackware":
-			installer = "slackpkg install"
-		default:
-			printError("Unknown distro")
-			return
+	case "debian":
+		installer = "apt install -y"
+	case "fedora":
+		installer = "dnf install -y"
+	case "archlinux":
+		installer = "pacman -S --noconfirm"
+	case "opensuse":
+		installer = "zypper install -y"
+	case "ubuntu":
+		installer = "apt install -y"
+	case "slackware":
+		installer = "slackpkg install"
+	default:
+		printError("Unknown distro")
+		return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
 		printError("Unknown distro")
 		return
 	}
-	installCmd := fmt.Sprintf("%s %s", installer, pkg)
+	packagesToInstall := []string{pkg}
+	if len(info.Libs) > 0 {
+		printInfo(fmt.Sprintf("Also installing dependencies: %s", strings.Join(info.Libs, ", ")))
+		packagesToInstall = append(info.Libs, pkg)
+	}
+	installCmd := fmt.Sprintf("%s %s", installer, strings.Join(packagesToInstall, " "))
 	if !execInContainer(contName, installCmd, true) {
 		printError("Installation failed")
 		return
@@ -247,21 +252,21 @@ func handleRemove(pkg string) {
 	printInfo(fmt.Sprintf("Removing %s from %s", pkg, info.Distro))
 	var remover string
 	switch info.Distro {
-		case "debian":
-			remover = "apt remove -y"
-		case "fedora":
-			remover = "dnf remove -y"
-		case "archlinux":
-			remover = "pacman -R --noconfirm"
-		case "opensuse":
-			remover = "zypper remove -y"
-		case "ubuntu":
-			remover = "apt remove -y"
-		case "slackware":
-			remover = "slackpkg remove"
-		default:
-			printError("Unknown distro")
-			return
+	case "debian":
+		remover = "apt remove -y"
+	case "fedora":
+		remover = "dnf remove -y"
+	case "archlinux":
+		remover = "pacman -R --noconfirm"
+	case "opensuse":
+		remover = "zypper remove -y"
+	case "ubuntu":
+		remover = "apt remove -y"
+	case "slackware":
+		remover = "slackpkg remove"
+	default:
+		printError("Unknown distro")
+		return
 	}
 	contName := getContainerName(info.Distro)
 	if contName == "" {
@@ -295,18 +300,18 @@ func handleUpdate() {
 	for _, cont := range containers {
 		var updater string
 		switch cont {
-			case "debian-testing":
-				updater = "apt update && apt upgrade -y"
-			case "fedora":
-				updater = "dnf update -y"
-			case "archlinux":
-				updater = "pacman -Syu --noconfirm"
-			case "opensuse-tumbleweed":
-				updater = "zypper dup -y"
-			case "ubuntu":
-				updater = "apt update && apt upgrade -y"
-			case "slackware":
-				updater = "slackpkg update && slackpkg upgrade-all"
+		case "debian-testing":
+			updater = "apt update && apt upgrade -y"
+		case "fedora":
+			updater = "dnf update -y"
+		case "archlinux":
+			updater = "pacman -Syu --noconfirm"
+		case "opensuse-tumbleweed":
+			updater = "zypper dup -y"
+		case "ubuntu":
+			updater = "apt update && apt upgrade -y"
+		case "slackware":
+			updater = "slackpkg update && slackpkg upgrade-all"
 		}
 		wg.Add(1)
 		go func(c string, u string) {
@@ -359,7 +364,7 @@ func handleSearch(term string) {
 
 func main() {
 	var rootCmd = &cobra.Command{
-		Use:   "isolator <command> [args]",
+		Use:   "isolator [args]",
 		Short: cyanStyle.Render("Isolator CLI Tool"),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.Help()
@@ -369,26 +374,26 @@ func main() {
 		&cobra.Command{
 			Use:   "init",
 			Short: "Initialize isolator (create containers)",
-			   Args:  cobra.NoArgs,
-			   Run: func(cmd *cobra.Command, args []string) {
-				   handleInit()
-			   },
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleInit()
+			},
 		},
 		&cobra.Command{
-			Use:   "install <pkg>",
+			Use:   "install ",
 			Short: "Install a package",
 			Args:  cobra.ExactArgs(1),
-			   Run: func(cmd *cobra.Command, args []string) {
-				   handleInstall(args[0])
-			   },
+			Run: func(cmd *cobra.Command, args []string) {
+				handleInstall(args[0])
+			},
 		},
 		&cobra.Command{
-			Use:   "remove <pkg>",
+			Use:   "remove ",
 			Short: "Remove a package",
 			Args:  cobra.ExactArgs(1),
-			   Run: func(cmd *cobra.Command, args []string) {
-				   handleRemove(args[0])
-			   },
+			Run: func(cmd *cobra.Command, args []string) {
+				handleRemove(args[0])
+			},
 		},
 		&cobra.Command{
 			Use:   "update",
@@ -409,18 +414,18 @@ func main() {
 		&cobra.Command{
 			Use:   "upgrade",
 			Short: "Upgrade all possible (with checks)",
-			   Args:  cobra.NoArgs,
-			   Run: func(cmd *cobra.Command, args []string) {
-				   handleUpgrade()
-			   },
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleUpgrade()
+			},
 		},
 		&cobra.Command{
-			Use:   "search <pkg>",
+			Use:   "search ",
 			Short: "Search for a package",
 			Args:  cobra.ExactArgs(1),
-			   Run: func(cmd *cobra.Command, args []string) {
-				   handleSearch(args[0])
-			   },
+			Run: func(cmd *cobra.Command, args []string) {
+				handleSearch(args[0])
+			},
 		},
 	)
 	if err := rootCmd.Execute(); err != nil {
