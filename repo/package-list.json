@@ -293,7 +293,7 @@
     "type": "cli"
   },
   {
-    "name": "gfortan",
+    "name": "gfortran",
     "distro": "debian",
     "type": "cli"
   },
@@ -1575,6 +1575,1431 @@
   {
     "name": "bpytop",
     "distro": "slackware",
+    "type": "cli"
+  },
+  {
+    "name": "lazygit",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "lazydocker",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gitui",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "tig",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "delta",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "difftastic",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gh",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "glab",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "act",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "pre-commit",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "commitizen",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "helm",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "kubectl",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "k9s",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "minikube",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "kind",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "flux",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "argocd",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "pulumi",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "awscli",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "azure-cli",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "google-cloud-cli",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "doctl",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "flyctl",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "ollama",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "llama.cpp",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "whisper",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "stable-diffusion-webui",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "comfyui",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "open-webui",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "koboldcpp",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "signal-desktop",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "discord",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "slack",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "teams",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "skypeforlinux",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "viber",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "whatsapp-for-linux",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "fractal",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "nheko",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "revolt-desktop",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "vesktop",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "brave-browser",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "chromium",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "vivaldi",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "opera",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "librewolf",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "tor-browser",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "falkon",
+    "distro": "opensuse",
+    "type": "gui"
+  },
+  {
+    "name": "epiphany",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "midori",
+    "distro": "opensuse",
+    "type": "gui"
+  },
+  {
+    "name": "foot",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "ghostty",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "tilix",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "terminator",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "xterm",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "rxvt-unicode",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "konsole",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "xfce4-terminal",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "code",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "vscodium",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "sublime-text",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "atom",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "geany",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "kate",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "mousepad",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "micro",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "kakoune",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "amp",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "lapce",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "zed",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "jetbrains-toolbox",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "intellij-idea-community",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "pycharm-community",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "clion",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "goland",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "rider",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "datagrip",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "android-studio",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "godot",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "love2d",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "tiled",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "ldtk",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "aseprite",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "libresprite",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "pixelorama",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "freecad",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "openscad",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "solvespace",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "cura",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "prusaslicer",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "bambu-studio",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "orcaslicer",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "kicad",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "fritzing",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "librepcb",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "cryptomator",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "veracrypt",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "keepassxc",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "bitwarden",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "pass",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "gopass",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "age",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gnupg",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "pinentry-gtk",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "kleopatra",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "gpa",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "rclone",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "restic",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "borg",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "duplicati",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "vorta",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "timeshift",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "snapper",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "syncthing",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "nextcloud-client",
+    "distro": "opensuse",
+    "type": "gui"
+  },
+  {
+    "name": "insync",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "dropbox",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "mega-sync",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "pcloud",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "nemo",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "thunar",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "pcmanfm",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "krusader",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "doublecmd",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "midnight-commander",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "xarchiver",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "ark",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "file-roller",
+    "distro": "ubuntu",
+    "type": "gui"
+  },
+  {
+    "name": "engrampa",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "p7zip",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "zstd",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "lz4",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "xz-utils",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "bzip2",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "lzop",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "mpd",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "ncmpcpp",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "cmus",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "moc",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "beets",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "strawberry",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "clementine",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "amarok",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "quodlibet",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "spotify",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "shortwave",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "gradio",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "celluloid",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "haruna",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "smplayer",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "mplayer",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "parole",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "dragon",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "handbrake",
+    "distro": "fedora",
+    "type": "gui"
+  },
+  {
+    "name": "avisynth",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "mkvtoolnix",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "mp3gain",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "flac",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "opus-tools",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "sox",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "lame",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "cava",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "tty-clock",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "pipes-sh",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "cmatrix",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "cbonsai",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "asciiquarium",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "sl",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "lolcat",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "figlet",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "toilet",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "cowsay",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "fortune",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "ponysay",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "nyancat",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "netdata",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "grafana",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "node-exporter",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "telegraf",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "influxdb",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "loki",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "vault",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "consul",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "nomad",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "packer",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "boundary",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "waybar",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "eww",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "polybar",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "i3bar",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "rofi",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "wofi",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "fuzzel",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "dmenu",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "dunst",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "mako",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "swaync",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "picom",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "swaybg",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "feh",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "nitrogen",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "variety",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "xwallpaper",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "hyprpaper",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "flameshot",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "grim",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "slurp",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "scrot",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "spectacle",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "ksnip",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "xdotool",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "ydotool",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "wl-clipboard",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "xclip",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "xsel",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "copyq",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "cliphist",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "greenclip",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "numlockx",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "unclutter",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "redshift",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "gammastep",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "wlsunset",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "brightnessctl",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "light",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "acpi",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "powertop",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "tlp",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "thermald",
+    "distro": "ubuntu",
+    "type": "cli"
+  },
+  {
+    "name": "cpufrequtils",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "auto-cpufreq",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "lshw",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "hwinfo",
+    "distro": "opensuse",
+    "type": "cli"
+  },
+  {
+    "name": "inxi",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "dmidecode",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "pciutils",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "usbutils",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "smartmontools",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "hdparm",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "nvme-cli",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "crystaldiskinfo",
+    "distro": "archlinux",
+    "type": "gui"
+  },
+  {
+    "name": "gsmartcontrol",
+    "distro": "debian",
+    "type": "gui"
+  },
+  {
+    "name": "stress",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "stress-ng",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "sysbench",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "phoronix-test-suite",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "fio",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "iperf3",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "speedtest-cli",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "bandwhich",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "gojq",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "yq",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "dasel",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "xsv",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "miller",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "csvkit",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "q",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "duckdb",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "visidata",
+    "distro": "fedora",
+    "type": "cli"
+  },
+  {
+    "name": "glow",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "mdcat",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "presenterm",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "slides",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "marp",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "zola",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "eleventy",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "astro",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "wrangler",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "netlify-cli",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "vercel",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "surge",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "bun",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "deno",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "pnpm",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "yarn",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "nvm",
+    "distro": "debian",
+    "type": "cli"
+  },
+  {
+    "name": "pyenv",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "rbenv",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "rustup",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "asdf",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "mise",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "direnv",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "devenv",
+    "distro": "archlinux",
+    "type": "cli"
+  },
+  {
+    "name": "nix",
+    "distro": "archlinux",
     "type": "cli"
   }
 ]
