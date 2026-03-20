@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ import (
 type PackageInfo struct {
 	Name   string   `json:"name"`
 	Distro string   `json:"distro"`
-	Type   string   `json:"type"`
+	Type   string   `json:"type"` // "cli", "gui", "de"
 	Libs   []string `json:"libs,omitempty"`
 }
 
@@ -32,15 +33,16 @@ type InstalledPackage struct {
 	Pkg      string `json:"pkg"`
 	Cont     string `json:"cont"`
 	Distro   string `json:"distro"`
-	Type     string `json:"type"`
-	Isolated bool   `json:"isolated"`
+	Type     string `json:"type"`     // typ pakietu w momencie instalacji
+	Isolated bool   `json:"isolated"` // czy kontener jest izolowany (własny home)
 }
 
-type DistroboxInfo struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Running bool   `json:"running"`
-	Image   string `json:"image"`
+type ContainerInfo struct {
+	ID     string `json:"Id"`
+	Names  []string
+	State  string
+	Status string
+	Size   string `json:"Size"` // w formacie "123MB (virtual 456MB)"
 }
 
 // ─── Distro Adapters ─────────────────────────────────────────────────────────
@@ -104,7 +106,7 @@ type Distro struct {
 
 const (
 	repoURL       = "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
-	distroboxBin  = "distrobox"
+	podmanBin     = "podman"
 	configDir     = ".config/isolator"
 	installedFile = "installed.json"
 	repoFile      = "package-list.json"
@@ -135,7 +137,6 @@ var (
 	magentaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
-	// Help menu styles
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).
 	Background(lipgloss.Color("236")).Padding(0, 2)
 	cmdStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
@@ -194,15 +195,19 @@ func execCommand(bin string, args []string) bool {
 	return cmd.Run() == nil
 }
 
-// execInContainer runs a command inside distrobox with sudo (non-interactive).
-// Uses `sudo sh -c` with DEBIAN_FRONTEND=noninteractive to avoid any prompts.
-func execInContainer(cont string, cmdStr string, useSudo bool) bool {
+// execInContainer executes a command inside a container with optional sudo.
+// Uses podman exec. If interactive is true, adds -it.
+func execInContainer(cont string, cmdStr string, interactive bool, useSudo bool) bool {
 	fullCmd := cmdStr
 	if useSudo {
 		fullCmd = "DEBIAN_FRONTEND=noninteractive sudo -n sh -c '" + strings.ReplaceAll(cmdStr, "'", "'\\''") + "'"
 	}
-	args := []string{"enter", cont, "--", "sh", "-c", fullCmd}
-	return execCommand(distroboxBin, args)
+	args := []string{"exec"}
+	if interactive {
+		args = append(args, "-it")
+	}
+	args = append(args, cont, "sh", "-c", fullCmd)
+	return execCommand(podmanBin, args)
 }
 
 // execInContainerWithOutput runs a command and captures output.
@@ -211,9 +216,29 @@ func execInContainerWithOutput(cont string, cmdStr string, useSudo bool) (string
 	if useSudo {
 		fullCmd = "DEBIAN_FRONTEND=noninteractive sudo -n sh -c '" + strings.ReplaceAll(cmdStr, "'", "'\\''") + "'"
 	}
-	cmd := exec.Command(distroboxBin, "enter", cont, "--", "sh", "-c", fullCmd)
+	cmd := exec.Command(podmanBin, "exec", cont, "sh", "-c", fullCmd)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err == nil
+}
+
+// ensureContainerRunning starts the container if it is not already running.
+func ensureContainerRunning(name string) bool {
+	// Check container state
+	cmd := exec.Command(podmanBin, "ps", "-a", "--filter", "name="+name, "--format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var containers []ContainerInfo
+	if err := json.Unmarshal(out, &containers); err != nil || len(containers) == 0 {
+		return false
+	}
+	if containers[0].State == "running" {
+		return true
+	}
+	// Start container
+	printStep(fmt.Sprintf("Starting container %s...", name))
+	return execCommand(podmanBin, []string{"start", name})
 }
 
 // ─── Repo management ─────────────────────────────────────────────────────────
@@ -313,21 +338,26 @@ func readRepoPackages() []PackageInfo {
 
 // ─── Container helpers ───────────────────────────────────────────────────────
 
-func getDistroboxes() []DistroboxInfo {
-	cmd := exec.Command(distroboxBin, "list", "--json")
+// getContainers returns list of all Podman containers (JSON).
+func getContainers() []ContainerInfo {
+	cmd := exec.Command(podmanBin, "ps", "-a", "--format", "json")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
-	var list []DistroboxInfo
-	json.Unmarshal(out, &list)
+	var list []ContainerInfo
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil
+	}
 	return list
 }
 
 func containerExists(name string) bool {
-	for _, db := range getDistroboxes() {
-		if db.Name == name {
-			return true
+	for _, c := range getContainers() {
+		for _, n := range c.Names {
+			if n == name {
+				return true
+			}
 		}
 	}
 	return false
@@ -335,11 +365,13 @@ func containerExists(name string) bool {
 
 func getOurContainers() []string {
 	var ours []string
-	for _, db := range getDistroboxes() {
-		for _, base := range containers {
-			if db.Name == base || strings.HasPrefix(db.Name, base+"-") {
-				ours = append(ours, db.Name)
-				break
+	for _, c := range getContainers() {
+		for _, n := range c.Names {
+			for _, base := range containers {
+				if n == base || strings.HasPrefix(n, base+"-") {
+					ours = append(ours, n)
+					break
+				}
 			}
 		}
 	}
@@ -347,35 +379,99 @@ func getOurContainers() []string {
 }
 
 func getContainerSize(name string) string {
-	cmd := exec.Command("podman", "ps", "-a", "--size", "--format", "{{.Size}}", "--filter", "name=^"+name+"$")
+	cmd := exec.Command(podmanBin, "ps", "-a", "--size", "--format", "json", "--filter", "name="+name)
 	out, err := cmd.Output()
 	if err != nil {
 		return "unknown"
 	}
-	return strings.TrimSpace(string(out))
+	var list []ContainerInfo
+	if err := json.Unmarshal(out, &list); err != nil || len(list) == 0 {
+		return "unknown"
+	}
+	return list[0].Size
 }
 
-// createContainer creates a distrobox container, pulling image automatically.
-func createContainer(name, image, homeDir string) bool {
+// getPodmanCreateArgs builds arguments for podman create based on package type.
+// It adds mounts for GUI/DE when necessary.
+func getPodmanCreateArgs(name, image, homeDir, pkgType string) []string {
 	uid := os.Getuid()
-	envFlag := fmt.Sprintf("--env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid)
+	gid := os.Getgid()
+	homeHost := homeDir
+	if homeHost == "" {
+		homeHost = os.Getenv("HOME")
+	}
 	args := []string{
 		"create",
 		"--name", name,
-		"--image", image,
-		"--home", homeDir,
-		"--yes",            // auto-confirm image pull — no interactive prompt
-		"--additional-flags", envFlag,
+		"--hostname", name,
+		"--pull", "always",
+		"--userns=keep-id",
+		"--user", fmt.Sprintf("%d:%d", uid, gid),
+		"--workdir", "/home/user",
+		"--env", "HOME=/home/user",
+		"--env", fmt.Sprintf("USER=%s", os.Getenv("USER")),
 	}
+
+	// Mount home directory
+	args = append(args, "--volume", fmt.Sprintf("%s:/home/user:rw", homeHost))
+
+	// Always add GUI/DE mounts (safe for CLI as well)
+	// X11
+	if _, err := os.Stat("/tmp/.X11-unix"); err == nil {
+		args = append(args, "--volume", "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+		if display := os.Getenv("DISPLAY"); display != "" {
+			args = append(args, "--env", "DISPLAY="+display)
+		}
+	}
+	// Wayland
+	if _, err := os.Stat("/run/user/" + strconv.Itoa(uid) + "/wayland-0"); err == nil {
+		args = append(args, "--volume", fmt.Sprintf("/run/user/%d:/run/user/%d:rw", uid, uid))
+		args = append(args, "--env", "WAYLAND_DISPLAY=wayland-0")
+	}
+	// PulseAudio / PipeWire
+	if _, err := os.Stat("/run/user/" + strconv.Itoa(uid) + "/pulse"); err == nil {
+		args = append(args, "--volume", fmt.Sprintf("/run/user/%d/pulse:/run/user/%d/pulse:rw", uid, uid))
+	}
+	if _, err := os.Stat("/run/user/" + strconv.Itoa(uid) + "/pipewire-0"); err == nil {
+		args = append(args, "--volume", fmt.Sprintf("/run/user/%d/pipewire-0:/run/user/%d/pipewire-0:rw", uid, uid))
+	}
+	// D-Bus
+	if _, err := os.Stat("/run/user/" + strconv.Itoa(uid) + "/bus"); err == nil {
+		args = append(args, "--env", fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid))
+	}
+	// GPU / DRI
+	if _, err := os.Stat("/dev/dri"); err == nil {
+		args = append(args, "--device", "/dev/dri:/dev/dri")
+	}
+	// Groups for audio/video
+	args = append(args, "--group-add", "video", "--group-add", "audio")
+
+	// SELinux (if enabled) – may be needed for X11
+	args = append(args, "--security-opt", "label=type:container_runtime_t")
+
+	// Image
+	args = append(args, image)
+
+	return args
+}
+
+// createContainer creates a Podman container with appropriate mounts.
+func createContainer(name, image, homeDir, pkgType string) bool {
+	args := getPodmanCreateArgs(name, image, homeDir, pkgType)
 	printStep(fmt.Sprintf("Creating container %s (image: %s)...", name, image))
-	return execCommand(distroboxBin, args)
+	if !execCommand(podmanBin, args) {
+		return false
+	}
+	printSuccess(fmt.Sprintf("Container '%s' created", name))
+	// Start the container so it's ready for exec
+	return execCommand(podmanBin, []string{"start", name})
 }
 
 // initContainer runs the initial package manager sync inside a fresh container.
 func initContainer(cont string, d Distro) bool {
 	printStep("Initializing package manager in container...")
 	initCmd := d.Adapter.Init()
-	return execInContainer(cont, initCmd, true)
+	return execInContainer(cont, initCmd, false, true)
 }
 
 // ─── Wrapper scripts ─────────────────────────────────────────────────────────
@@ -386,7 +482,7 @@ func createWrapper(pkg, contName string) bool {
 		return false
 	}
 	filePath := filepath.Join(binDir, pkg)
-	content := fmt.Sprintf("#!/bin/sh\nexec distrobox enter %s -- %s \"$@\"\n", contName, pkg)
+	content := fmt.Sprintf("#!/bin/sh\nexec %s exec -it %s %s \"$@\"\n", podmanBin, contName, pkg)
 	if err := os.WriteFile(filePath, []byte(content), 0755); err != nil {
 		return false
 	}
@@ -482,14 +578,19 @@ func handleInstall(pkg string, isolated bool) {
 
 	newContainer := false
 	if !containerExists(contName) {
-		if !createContainer(contName, d.Image, homeDir) {
+		// Use package type to determine mounts
+		if !createContainer(contName, d.Image, homeDir, info.Type) {
 			printError(fmt.Sprintf("Failed to create container '%s'", contName))
 			return
 		}
-		printSuccess(fmt.Sprintf("Container '%s' created", contName))
 		newContainer = true
 	} else {
 		printInfo(fmt.Sprintf("Reusing existing container '%s'", contName))
+		// Ensure it's running
+		if !ensureContainerRunning(contName) {
+			printError(fmt.Sprintf("Failed to start container '%s'", contName))
+			return
+		}
 	}
 
 	// Init package manager on fresh containers
@@ -508,7 +609,7 @@ func handleInstall(pkg string, isolated bool) {
 	installCmd := d.Adapter.Install() + " " + strings.Join(packagesToInstall, " ")
 	printStep(fmt.Sprintf("Running: %s", dimStyle.Render(installCmd)))
 
-	if !execInContainer(contName, installCmd, true) {
+	if !execInContainer(contName, installCmd, false, true) {
 		printError("Installation failed")
 		return
 	}
@@ -589,7 +690,7 @@ func handleRemove(pkg string) {
 			packagesToRemove = append(packagesToRemove, info.Libs...)
 		}
 		removeCmd := d.Adapter.Remove() + " " + strings.Join(packagesToRemove, " ")
-		if !execInContainer(ip.Cont, removeCmd, true) {
+		if !execInContainer(ip.Cont, removeCmd, false, true) {
 			printError("Package removal in container failed")
 			return
 		}
@@ -597,7 +698,7 @@ func handleRemove(pkg string) {
 
 	if ip.Isolated {
 		printStep(fmt.Sprintf("Removing isolated container '%s'...", ip.Cont))
-		if !execCommand(distroboxBin, []string{"rm", "--force", ip.Cont}) {
+		if !execCommand(podmanBin, []string{"rm", "--force", ip.Cont}) {
 			printError("Failed to remove isolated container")
 			return
 		}
@@ -640,7 +741,14 @@ func handleUpdate() {
 			if distroName == "" {
 				return
 			}
-			ok := execInContainer(c, distros[distroName].Adapter.Update(), true)
+			// Ensure container is running before update
+			if !ensureContainerRunning(c) {
+				mu.Lock()
+				results[c] = false
+				mu.Unlock()
+				return
+			}
+			ok := execInContainer(c, distros[distroName].Adapter.Update(), false, true)
 			mu.Lock()
 			results[c] = ok
 			mu.Unlock()
@@ -791,19 +899,21 @@ func handleStatus() {
 		{Title: "Packages", Width: 34},
 	}
 	var rows []table.Row
-	for _, db := range getDistroboxes() {
-		isOur := false
-		for _, base := range containers {
-			if db.Name == base || strings.HasPrefix(db.Name, base+"-") {
-				isOur = true
-				break
+	for _, db := range getContainers() {
+		for _, name := range db.Names {
+			isOur := false
+			for _, base := range containers {
+				if name == base || strings.HasPrefix(name, base+"-") {
+					isOur = true
+					break
+				}
 			}
+			if !isOur {
+				continue
+			}
+			size := getContainerSize(name)
+			rows = append(rows, []string{name, db.State, size, strings.Join(pkgMap[name], ", ")})
 		}
-		if !isOur {
-			continue
-		}
-		size := getContainerSize(db.Name)
-		rows = append(rows, []string{db.Name, db.Status, size, strings.Join(pkgMap[db.Name], ", ")})
 	}
 	if len(rows) == 0 {
 		printInfo("No managed containers found")
@@ -881,7 +991,7 @@ func handleList() {
 
 func printColoredHelp() {
 	fmt.Println()
-	fmt.Println(titleStyle.Render("  Isolator — Distrobox Package Manager  "))
+	fmt.Println(titleStyle.Render("  Isolator — Podman Package Manager  "))
 	fmt.Println()
 	fmt.Println(sectionStyle.Render("  Usage"))
 	fmt.Printf("    %s %s\n", cyanStyle.Render("isolator"), descStyle.Render("<command> [flags]"))
@@ -889,7 +999,7 @@ func printColoredHelp() {
 	fmt.Println(sectionStyle.Render("  Commands"))
 
 	cmds := []struct{ name, args, desc string }{
-		{"install", "<pkg>", "Install a package into a distrobox container"},
+		{"install", "<pkg>", "Install a package into a Podman container"},
 		{"remove", "<pkg>", "Remove an installed package"},
 		{"search", "<term>", "Search the repository for packages"},
 		{"info", "<pkg>", "Show detailed info about a package"},
@@ -932,9 +1042,15 @@ func printColoredHelp() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
+	// Check if podman is available
+	if _, err := exec.LookPath(podmanBin); err != nil {
+		printError("Podman not found in PATH. Please install podman.")
+		os.Exit(1)
+	}
+
 	var rootCmd = &cobra.Command{
 		Use:           "isolator",
-		Short:         "Distrobox-based package manager",
+		Short:         "Podman-based package manager",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -1005,19 +1121,19 @@ func main() {
 		},
 		&cobra.Command{
 			Use:   "refresh",
-		    Short: "Force re-download of the repository list",
-		    Args:  cobra.NoArgs,
-		    Run: func(cmd *cobra.Command, args []string) {
-			    handleRefresh()
-		    },
+			Short: "Force re-download of the repository list",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handleRefresh()
+			},
 		},
 		&cobra.Command{
 			Use:   "upgrade",
-		    Short: "Full system upgrade (host + containers)",
+			Short: "Full system upgrade (host + containers)",
 			   Args:  cobra.NoArgs,
-		    Run: func(cmd *cobra.Command, args []string) {
-			    handleUpgrade()
-		    },
+			   Run: func(cmd *cobra.Command, args []string) {
+				   handleUpgrade()
+			   },
 		},
 	)
 
