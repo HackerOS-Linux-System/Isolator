@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Isolator Store
+Comment=Browse and install Isolator packages
+Exec=isolator-store
+Icon=system-software-install
+Terminal=false
+Categories=System;PackageManager;
