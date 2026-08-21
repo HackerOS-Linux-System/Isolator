@@ -1,0 +1,14 @@
+[package]
+-> name        => isolator-builder
+-> version     => 0.1
+-> description => Isolator's distro/image builder (H# port)
+-> author      => HackerOS-Linux-System
+-> license     => Apache-2.0
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/builder
+
+[deps]
+-> libc => dynamic
