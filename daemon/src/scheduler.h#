@@ -1,0 +1,143 @@
+mod util
+mod log
+mod config
+
+pub struct TaskRun is
+    pub name:        string
+    pub last_run_ms: int
+end
+
+pub struct Scheduler is
+    pub cfg:      DaemonConfig
+    pub logger:   Logger
+    pub last_run: [TaskRun]
+end
+
+pub fn new_scheduler(cfg: DaemonConfig, logger: Logger) -> Scheduler is
+    return Scheduler { cfg: cfg, logger: logger, last_run: [] }
+end
+
+fn find_last_run(s: Scheduler, name: string) -> (bool, int) is
+    let n: int = array_len(s.last_run)
+    let mut i: int = 0
+    while i < n is
+        if s.last_run[i].name == name is return (true, s.last_run[i].last_run_ms) end
+        i += 1
+    end
+    return (false, 0)
+end
+
+fn set_last_run(s0: Scheduler, name: string, ms: int) -> Scheduler is
+    let mut s: Scheduler = s0
+    let n: int = array_len(s.last_run)
+    let mut i: int = 0
+    let mut found: bool = false
+    while i < n is
+        if s.last_run[i].name == name is
+            s.last_run[i] = TaskRun { name: name, last_run_ms: ms }
+            found = true
+        end
+        i += 1
+    end
+    if !found is s.last_run = array_push(s.last_run, TaskRun { name: name, last_run_ms: ms }) end
+    return s
+end
+
+;; maybe_run fires the named task if its interval has elapsed since it last
+;; ran (or has never run). interval_secs <= 0 disables the task entirely.
+;; Returns the possibly-updated Scheduler (last_run is a value, not a
+;; pointer, so callers must take the return value — see the equivalent
+;; note throughout the rest of this port for HkMap/HkDocument).
+fn maybe_run(s0: Scheduler, name: string, interval_secs: int, run_fn: string) -> Scheduler is
+    if interval_secs <= 0 is return s0 end
+    let __dstr22: (bool, int) = find_last_run(s0, name)
+    let found: bool = __dstr22.0
+    let last_ms: int = __dstr22.1
+    let now_ms: int = time_ms()
+    let due: bool = !found || (now_ms - last_ms) >= interval_secs * 1000
+
+    let mut s: Scheduler = s0
+    if due is
+        s = set_last_run(s, name, now_ms)
+        log::log_printf(s.logger, "running scheduled task: " + name)
+        if run_fn == "update" is
+            run_update(s)
+        else if run_fn == "autoremove" is
+            run_isolator(s, ["autoremove"])
+        else if run_fn == "clean" is
+            run_isolator(s, ["clean"])
+        end
+    end
+    return s
+end
+
+;; tick checks all three scheduled tasks once. Called once a minute by the
+;; caller's loop (run_daemon, in main.h#) — a minute granularity is plenty
+;; for hour/day/week-scale maintenance intervals and keeps the loop cheap,
+;; same as the Go original's own reasoning for its 1-minute ticker.
+pub fn tick(s0: Scheduler) -> Scheduler is
+    let mut s: Scheduler = s0
+    s = maybe_run(s, "update", s.cfg.update_interval_secs, "update")
+    s = maybe_run(s, "autoremove", s.cfg.autoremove_interval_secs, "autoremove")
+    s = maybe_run(s, "clean", s.cfg.clean_interval_secs, "clean")
+    return s
+end
+
+fn run_update(s: Scheduler) is
+    if s.cfg.snapshot_before_update is
+        run_isolator(s, ["snapshot", "--all"])
+    end
+    run_isolator(s, ["update"])
+end
+
+;; run_isolator shells out to the real isolator binary and logs its
+;; outcome.
+fn run_isolator(s: Scheduler, args: [string]) is
+    let __dstr23: (int, string) = util::run_argv("isolator", args)
+    let rc: int = __dstr23.0
+    let out: string = __dstr23.1
+    let args_str: string = "[" + util::string_join(args, " ") + "]"
+    if rc != 0 is
+        log::log_printf(s.logger, "isolator " + args_str + " failed (exit " + to_string(rc) + ")\n" + out)
+        return
+    end
+    log::log_printf(s.logger, "isolator " + args_str + " completed")
+end
+
+;; task_args maps a task name to the isolator argv it runs, or [] (empty)
+;; for an unrecognized task — callers check array_len(args) == 0 to detect
+;; "unknown task", matching the Go original's nil-slice sentinel.
+pub fn task_args(task: string, dry_run: bool) -> [string] is
+    let mut args: [string] = []
+    if task == "update" is
+        args = ["update"]
+    else if task == "autoremove" is
+        args = ["autoremove"]
+    else if task == "clean" is
+        args = ["clean"]
+    else if task == "snapshot" is
+        args = ["snapshot", "--all"]
+    else if task == "rollback" is
+        args = ["rollback", "--all"]
+    else is
+        let __empty1: [string] = []
+        return __empty1
+    end
+    if dry_run is args = array_push(args, "--dry-run") end
+    return args
+end
+
+;; trigger_now runs a named task immediately, out of band from its regular
+;; schedule — used by both `daemon trigger <task>` run directly and by the
+;; IPC "trigger" command against a running daemon. Returns "" on success,
+;; or an error message.
+pub fn trigger_now(task: string, dry_run: bool) -> string is
+    let args: [string] = task_args(task, dry_run)
+    if array_len(args) == 0 is
+        return "unknown task \"" + task + "\" (expected: update, autoremove, clean, snapshot, rollback)"
+    end
+    if util::run_argv_status_visible("isolator", args) != 0 is
+        return "isolator " + util::string_join(args, " ") + " exited non-zero"
+    end
+    return ""
+end
