@@ -1,0 +1,114 @@
+mod hkfmt
+mod util
+
+pub struct DaemonConfig is
+    pub update_interval_secs:     int
+    pub autoremove_interval_secs: int
+    pub clean_interval_secs:      int
+    pub snapshot_before_update:   bool
+    pub socket_path:              string
+    pub log_path:                 string
+end
+
+pub fn default_daemon_config() -> DaemonConfig is
+    return DaemonConfig {
+        update_interval_secs: 24 * 3600,
+        autoremove_interval_secs: 7 * 24 * 3600,
+        clean_interval_secs: 7 * 24 * 3600,
+        snapshot_before_update: true,
+        socket_path: "/run/isolator-daemon.sock",
+        log_path: "",
+    }
+end
+
+;; parse_duration_secs parses strings like "24h", "168h", "90m", "45s",
+;; "1h30m" (simple sequences of <number><unit>, summed) into whole
+;; seconds. Returns (seconds, true) on success, or (0, false).
+pub fn parse_duration_secs(s0: string) -> (int, bool) is
+    let s: string = string_trim(s0)
+    if s == "" is return (0, false) end
+    let n: int = string_len(s)
+    let mut total: int = 0
+    let mut i: int = 0
+    let mut matched_any: bool = false
+    while i < n is
+        let start: int = i
+        while i < n && string_at(s, i) >= "0" && string_at(s, i) <= "9" is i += 1 end
+        if i == start is return (0, false) end
+        let num: int = util::string_to_int(string_slice(s, start, i))
+        if i >= n is return (0, false) end
+        let unit: string = string_at(s, i)
+        i += 1
+        if unit == "s" is
+            total = total + num
+        else if unit == "m" is
+            total = total + num * 60
+        else if unit == "h" is
+            total = total + num * 3600
+        else is
+            return (0, false)
+        end
+        matched_any = true
+    end
+    if !matched_any is return (0, false) end
+    return (total, true)
+end
+
+fn get_duration(m: HkMap, key: string) -> (int, bool) is
+    if !hkfmt::hkmap_has(m, key) is return (0, false) end
+    let v: HkValue = hkfmt::hkmap_get(m, key)
+    if v.kind != "string" is return (0, false) end
+    return parse_duration_secs(v.str_val)
+end
+
+;; load_daemon_config reads a daemon.hk file. Missing keys fall back to
+;; default_daemon_config's values; a missing file entirely just returns
+;; the defaults outright (the daemon is meant to run zero-config out of
+;; the box — "expand later if you want" rather than "configure before
+;; first run"). Returns ("", cfg) on success, or (error, defaults).
+pub fn load_daemon_config(path: string) -> (string, DaemonConfig) is
+    let mut cfg: DaemonConfig = default_daemon_config()
+    if path == "" is return ("", cfg) end
+    if !file_exists(path) is return ("", cfg) end
+
+    let __dstr1: (string, HkDocument) = hkfmt::load_hk_file(path)
+    let err: string = __dstr1.0
+    let doc0: HkDocument = __dstr1.1
+    if err != "" is return ("parsing " + path + ": " + err, cfg) end
+    let __dstr2: (string, HkDocument) = hkfmt::resolve_interpolations(doc0)
+    let interp_err: string = __dstr2.0
+    let doc: HkDocument = __dstr2.1
+    if interp_err != "" is return (interp_err, cfg) end
+
+    let sched: HkMap = hkfmt::hkdoc_section(doc, "schedule")
+    let __dstr3: (int, bool) = get_duration(sched, "update_interval")
+    let u: int = __dstr3.0
+    let uok: bool = __dstr3.1
+    if uok is cfg.update_interval_secs = u end
+    let __dstr4: (int, bool) = get_duration(sched, "autoremove_interval")
+    let a: int = __dstr4.0
+    let aok: bool = __dstr4.1
+    if aok is cfg.autoremove_interval_secs = a end
+    let __dstr5: (int, bool) = get_duration(sched, "clean_interval")
+    let c: int = __dstr5.0
+    let cok: bool = __dstr5.1
+    if cok is cfg.clean_interval_secs = c end
+    if hkfmt::hkmap_has(sched, "snapshot_before_update") is
+        let v: HkValue = hkfmt::hkmap_get(sched, "snapshot_before_update")
+        if v.kind == "bool" is cfg.snapshot_before_update = v.bool_val end
+    end
+
+    let sock: HkMap = hkfmt::hkdoc_section(doc, "socket")
+    if hkfmt::hkmap_has(sock, "path") is
+        let v: HkValue = hkfmt::hkmap_get(sock, "path")
+        if v.kind == "string" && v.str_val != "" is cfg.socket_path = v.str_val end
+    end
+
+    let log_sec: HkMap = hkfmt::hkdoc_section(doc, "log")
+    if hkfmt::hkmap_has(log_sec, "path") is
+        let v: HkValue = hkfmt::hkmap_get(log_sec, "path")
+        if v.kind == "string" is cfg.log_path = v.str_val end
+    end
+
+    return ("", cfg)
+end
