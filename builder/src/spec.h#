@@ -1,0 +1,235 @@
+mod hkfmt
+mod util
+
+;; BuildSpec is a fully-resolved build request: the .hk file's contents,
+;; merged with an optional live-build-inspired companion directory of the
+;; same base name sitting next to it.
+pub struct BuildSpec is
+    pub name:           string
+    pub base:           string   ;; "debian" | "ubuntu" | "archlinux"
+    pub suite:          string   ;; e.g. "bookworm", "noble"
+    pub mirror:         string
+    pub kernel_package:  string
+    pub hostname:       string
+    pub packages:       [string] ;; merged: [packages] section + package-lists/*.list.chroot
+    pub hooks:           [string] ;; absolute paths to hooks/*.hook.chroot, sorted
+    pub includes_dir:    string   ;; includes.chroot/ if present, else ""
+    pub output_format:   string   ;; "rootfs" | "iso" | "qcow2"
+    pub output_path:     string
+    pub spec_path:       string
+    pub config_dir:      string   ;; the companion dir, if one was found
+end
+
+fn empty_spec() -> BuildSpec is
+    return BuildSpec {
+        name: "", base: "", suite: "", mirror: "", kernel_package: "", hostname: "",
+        packages: [], hooks: [], includes_dir: "", output_format: "", output_path: "",
+        spec_path: "", config_dir: "",
+    }
+end
+
+fn get(m: HkMap, key: string, def: string) -> string is
+    if !hkfmt::hkmap_has(m, key) is return def end
+    let v: HkValue = hkfmt::hkmap_get(m, key)
+    if v.kind == "string" || v.kind == "number" || v.kind == "bool" is return hkfmt::hk_as_string(v) end
+    return def
+end
+
+fn default_mirror(base: string) -> string is
+    if base == "ubuntu" is return "http://archive.ubuntu.com/ubuntu" end
+    if base == "debian" is return "http://deb.debian.org/debian" end
+    return ""
+end
+
+fn default_kernel_package(base: string) -> string is
+    if base == "ubuntu"    is return "linux-image-generic" end
+    if base == "debian"    is return "linux-image-amd64" end
+    if base == "archlinux" is return "linux" end
+    return ""
+end
+
+fn base_no_ext(path: string) -> string is
+    let slash: int = string_rfind(path, "/")
+    let base: string = if slash >= 0 then string_slice(path, slash + 1, string_len(path)) else path 
+    let dot: int = string_rfind(base, ".")
+    if dot > 0 is return string_slice(base, 0, dot) end
+    return base
+end
+
+fn trim_ext(path: string) -> string is
+    let dot: int = string_rfind(path, ".")
+    let slash: int = string_rfind(path, "/")
+    if dot > slash is return string_slice(path, 0, dot) end
+    return path
+end
+
+;; parse_build_spec loads <path>.hk and, if a companion directory with the
+;; same base name exists next to it, merges in its live-build-style
+;; content:
+;;
+;;   myimage.hk
+;;   myimage/
+;;     package-lists/*.list.chroot   -> merged into packages
+;;     hooks/*.hook.chroot           -> run inside the chroot, in sorted order
+;;     includes.chroot/              -> copied verbatim into the built rootfs
+;;
+;; Returns ("", spec) on success, or (error, empty_spec).
+pub fn parse_build_spec(path: string) -> (string, BuildSpec) is
+    let abs: string = path
+    let __dstr38: (string, HkDocument) = hkfmt::load_hk_file(abs)
+    let err: string = __dstr38.0
+    let doc0: HkDocument = __dstr38.1
+    if err != "" is return ("parsing " + abs + ": " + err, empty_spec()) end
+    let __dstr39: (string, HkDocument) = hkfmt::resolve_interpolations(doc0)
+    let interp_err: string = __dstr39.0
+    let doc: HkDocument = __dstr39.1
+    if interp_err != "" is return (interp_err, empty_spec()) end
+
+    let distro: HkMap = hkfmt::hkdoc_section(doc, "distro")
+    let kernel: HkMap = hkfmt::hkdoc_section(doc, "kernel")
+    let pkg_sec: HkMap = hkfmt::hkdoc_section(doc, "packages")
+    let output: HkMap = hkfmt::hkdoc_section(doc, "output")
+
+    let mut spec: BuildSpec = BuildSpec {
+        spec_path: abs,
+        name: get(distro, "name", base_no_ext(abs)),
+        base: get(distro, "base", "debian"),
+        suite: get(distro, "suite", "bookworm"),
+        mirror: get(distro, "mirror", ""),
+        kernel_package: get(kernel, "package", ""),
+        hostname: get(output, "hostname", ""),
+        packages: [],
+        hooks: [],
+        includes_dir: "",
+        output_format: get(output, "format", "rootfs"),
+        output_path: get(output, "path", "./build-output"),
+        config_dir: "",
+    }
+    if spec.mirror == "" is spec.mirror = default_mirror(spec.base) end
+    if spec.hostname == "" is spec.hostname = spec.name end
+    if spec.kernel_package == "" is spec.kernel_package = default_kernel_package(spec.base) end
+
+    let keys: [string] = hkfmt::hkmap_keys(pkg_sec)
+    let nk: int = array_len(keys)
+    let mut i: int = 0
+    while i < nk is
+        spec.packages = array_push(spec.packages, keys[i])
+        i += 1
+    end
+
+    ;; Live-build-inspired companion directory: same base name as the spec
+    ;; file, sitting right next to it.
+    let config_dir: string = trim_ext(abs)
+    if util::dir_exists(config_dir) is
+        spec.config_dir = config_dir
+        spec = merge_config_dir(spec, config_dir)
+    end
+
+    let validate_err: string = validate_spec(spec)
+    if validate_err != "" is return (validate_err, empty_spec()) end
+    return ("", spec)
+end
+
+;; mergeConfigDir folds a live-build-style config/ directory into spec:
+;;
+;;   package-lists/*.list.chroot  — one package name per line, '#' comments,
+;;                                   blank lines ignored (real live-build
+;;                                   convention).
+;;   hooks/*.hook.chroot           — shell scripts, executed inside the
+;;                                   chroot after packages are installed,
+;;                                   in lexical filename order (matches
+;;                                   live-build's own hook ordering rule).
+;;   includes.chroot/              — copied verbatim into the built rootfs,
+;;                                   preserving the relative path structure.
+fn merge_config_dir(spec0: BuildSpec, config_dir: string) -> BuildSpec is
+    let mut spec: BuildSpec = spec0
+
+    let lists_dir: string = util::path_join(config_dir, "package-lists")
+    if util::dir_exists(lists_dir) is
+        let entries: [string] = util::list_dir_names(lists_dir)
+        let n: int = array_len(entries)
+        let mut i: int = 0
+        while i < n is
+            let name: string = entries[i]
+            if string_ends_with(name, ".list.chroot") is
+                let pkgs: [string] = read_package_list(util::path_join(lists_dir, name))
+                spec.packages = array_concat(spec.packages, pkgs)
+            end
+            i += 1
+        end
+    end
+
+    let hooks_dir: string = util::path_join(config_dir, "hooks")
+    if util::dir_exists(hooks_dir) is
+        let entries: [string] = util::list_dir_names(hooks_dir)
+        let mut hooks: [string] = []
+        let n: int = array_len(entries)
+        let mut i: int = 0
+        while i < n is
+            let name: string = entries[i]
+            if string_ends_with(name, ".hook.chroot") is
+                hooks = array_push(hooks, util::path_join(hooks_dir, name))
+            end
+            i += 1
+        end
+        spec.hooks = sort_strings(hooks)
+    end
+
+    let includes_dir: string = util::path_join(config_dir, "includes.chroot")
+    if util::dir_exists(includes_dir) is
+        spec.includes_dir = includes_dir
+    end
+
+    return spec
+end
+
+fn read_package_list(path: string) -> [string] is
+    if !file_exists(path) is
+        let __empty1: [string] = []
+        return __empty1
+    end
+    let data: string = file_read(path)
+    let lines: [string] = string_split(data, "\n")
+    let mut pkgs: [string] = []
+    let n: int = array_len(lines)
+    let mut i: int = 0
+    while i < n is
+        let line: string = string_trim(lines[i])
+        if line != "" && !string_starts_with(line, "#") is
+            pkgs = array_push(pkgs, line)
+        end
+        i += 1
+    end
+    return pkgs
+end
+
+fn sort_strings(a: [string]) -> [string] is
+    let mut arr: [string] = a
+    let n: int = array_len(arr)
+    let mut i: int = 0
+    while i < n is
+        let mut min_idx: int = i
+        let mut j: int = i + 1
+        while j < n is
+            if arr[j] < arr[min_idx] is min_idx = j end
+            j += 1
+        end
+        if min_idx != i is
+            let tmp: string = arr[i]
+            arr[i] = arr[min_idx]
+            arr[min_idx] = tmp
+        end
+        i += 1
+    end
+    return arr
+end
+
+fn validate_spec(spec: BuildSpec) -> string is
+    if spec.base != "debian" && spec.base != "ubuntu" && spec.base != "archlinux" is
+        return "[distro] -> base: unsupported base \"" + spec.base + "\" (supported: debian, ubuntu, archlinux)"
+    end
+    if spec.output_format != "rootfs" && spec.output_format != "iso" && spec.output_format != "qcow2" is
+        return "[output] -> format: unsupported format \"" + spec.output_format + "\" (supported: rootfs, iso, qcow2)"
+    end
+    return ""
+end
