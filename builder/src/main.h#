@@ -1,0 +1,140 @@
+use "std -> env" from "env"
+
+extern dynamic [c] is
+    fn exit(code: int)
+end
+
+mod spec
+mod pipeline
+mod log
+
+let USAGE_TEXT: string =
+    "builder — Isolator's distro/image builder (separate tool, requires isolator on PATH)\n\n" +
+    "Usage:\n" +
+    "  builder build <spec.hk> [--format rootfs|iso|qcow2] [--out DIR]\n" +
+    "  builder help\n\n" +
+    "A spec file describes a minimal base image (kernel + podman + isolator —\n" +
+    "everything else is meant to be installed afterward as Isolator-managed\n" +
+    "containers):\n\n" +
+    "  [distro]\n" +
+    "  -> name   => hackeros-mini\n" +
+    "  -> base   => debian\n" +
+    "  -> suite  => bookworm\n\n" +
+    "  [kernel]\n" +
+    "  -> package => linux-image-amd64\n\n" +
+    "  [packages]\n" +
+    "  -> curl\n" +
+    "  -> vim\n\n" +
+    "  [output]\n" +
+    "  -> format => rootfs\n" +
+    "  -> path   => ./build-output\n\n" +
+    "Live-build-inspired companion directory (optional, same base name as the\n" +
+    "spec file, e.g. \"hackeros-mini/\" next to \"hackeros-mini.hk\"):\n\n" +
+    "  hackeros-mini/\n" +
+    "    package-lists/*.list.chroot   one package name per line\n" +
+    "    hooks/*.hook.chroot           shell scripts run inside the chroot,\n" +
+    "                                   in sorted filename order\n" +
+    "    includes.chroot/              files copied verbatim into the rootfs"
+
+fn print_usage() is
+    write(USAGE_TEXT)
+end
+
+fn contains_flag(args: [string], flag: string) -> bool is
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        if args[i] == flag is return true end
+        i += 1
+    end
+    return false
+end
+
+;; value_after_flag returns the argument right after `flag`, or "" if the
+;; flag isn't present or has nothing after it — the H# analogue of Go's
+;; flag.String() lookup.
+fn value_after_flag(args: [string], flag: string) -> string is
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        if args[i] == flag && i + 1 < n is return args[i + 1] end
+        i += 1
+    end
+    return ""
+end
+
+;; positional_args strips recognized --flag / --flag value pairs, leaving
+;; only bare positional arguments (mirrors flag.Args() after fs.Parse()).
+fn positional_args(args: [string]) -> [string] is
+    let mut result: [string] = []
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        let a: string = args[i]
+        if a == "--format" || a == "--out" is
+            i += 2
+            continue
+        end
+        result = array_push(result, a)
+        i += 1
+    end
+    return result
+end
+
+fn run_build_cmd(args: [string]) is
+    let format: string = value_after_flag(args, "--format")
+    let out: string = value_after_flag(args, "--out")
+    let rest: [string] = positional_args(args)
+
+    if array_len(rest) != 1 is
+        write("usage: builder build <spec.hk> [--format rootfs|iso|qcow2] [--out DIR]")
+        exit(1)
+    end
+
+    let __dstr51: (string, BuildSpec) = spec::parse_build_spec(rest[0])
+    let err: string = __dstr51.0
+    let s: BuildSpec = __dstr51.1
+    if err != "" is
+        log::log_err(err)
+        exit(1)
+    end
+    let mut s2: BuildSpec = s
+    if format != "" is s2.output_format = format end
+    if out != "" is s2.output_path = out end
+
+    let build_err: string = pipeline::run_build(s2)
+    if build_err != "" is
+        log::log_err(build_err)
+        exit(1)
+    end
+end
+
+fn main() is
+    let argv: [string] = env::args()
+    let n: int = array_len(argv)
+    let mut args: [string] = []
+    let mut i: int = 1
+    while i < n is args = array_push(args, argv[i]) i += 1 end
+
+    if array_len(args) < 1 is
+        print_usage()
+        exit(1)
+    end
+
+    let cmd: string = args[0]
+    let mut rest: [string] = []
+    let na: int = array_len(args)
+    let mut j: int = 1
+    while j < na is rest = array_push(rest, args[j]) j += 1 end
+
+    if cmd == "build" is
+        run_build_cmd(rest)
+    else if cmd == "-h" || cmd == "--help" || cmd == "help" is
+        print_usage()
+    else is
+        write("unknown command \"" + cmd + "\"")
+        write("")
+        print_usage()
+        exit(1)
+    end
+end
