@@ -1,1 +1,9 @@
+[workspace]
+-> name    => isolator-workspace
+-> version => 0.7
+-> mode    => standard
+-> members => ["source-code", "isolated", "builder", "daemon"]
 
+[build]
+-> parallel => true
+-> cache    => build/cache/
