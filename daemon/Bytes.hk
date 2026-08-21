@@ -1,0 +1,14 @@
+[package]
+-> name        => isolator-daemon
+-> version     => 0.1
+-> description => Unattended scheduling daemon for Isolator maintenance commands (H# port)
+-> author      => HackerOS-Linux-System
+-> license     => MIT
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/isolator-daemon
+
+[deps]
+-> libc => dynamic
