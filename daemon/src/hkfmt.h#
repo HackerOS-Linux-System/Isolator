@@ -1,0 +1,733 @@
+mod util
+
+;; ── Value model ──────────────────────────────────────────────────────────────
+;; HkValue is a single dynamically-typed .hk value — a tagged union. `kind`
+;; is one of: "string" | "number" | "bool" | "array" | "map".
+
+struct HkValue is
+    pub kind:     string
+    pub str_val:  string
+    pub num_val:  f64
+    pub bool_val: bool
+    pub arr_val:  [HkValue]
+    pub map_val:  HkMap
+end
+
+;; HkMap is an order-preserving string-keyed map (parallel arrays keep
+;; insertion order, mirroring the Go version's keys []string + values map).
+struct HkMap is
+    pub keys: [string]
+    pub vals: [HkValue]
+end
+
+fn empty_value() -> HkValue is
+    return HkValue { kind: "string", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], map_val: new_hkmap() }
+end
+
+pub fn new_hkmap() -> HkMap is
+    return HkMap { keys: [], vals: [] }
+end
+
+pub fn hkmap_index_of(m: HkMap, key: string) -> int is
+    let n: int = array_len(m.keys)
+    let mut i: int = 0
+    while i < n is
+        if m.keys[i] == key is return i end
+        i += 1
+    end
+    return -1
+end
+
+pub fn hkmap_set(m: HkMap, key: string, v: HkValue) -> HkMap is
+    let idx: int = hkmap_index_of(m, key)
+    if idx >= 0 is
+        ;; array_concat(x, []) forces a fresh copy rather than moving `m.vals`
+        ;; out of `m` — `m.keys` is still read right after (see the
+        ;; partial-move note on install.h#'s `d.cont_name` for why this
+        ;; matters).
+        let mut vals: [HkValue] = array_concat(m.vals, [])
+        vals[idx] = v
+        return HkMap { keys: m.keys, vals: vals }
+    end
+    return HkMap { keys: array_push(m.keys, key), vals: array_push(m.vals, v) }
+end
+
+pub fn hkmap_get(m: HkMap, key: string) -> HkValue is
+    let idx: int = hkmap_index_of(m, key)
+    if idx < 0 is return empty_value() end
+    return m.vals[idx]
+end
+
+pub fn hkmap_has(m: HkMap, key: string) -> bool is
+    return hkmap_index_of(m, key) >= 0
+end
+
+pub fn hkmap_delete(m: HkMap, key: string) -> HkMap is
+    let idx: int = hkmap_index_of(m, key)
+    if idx < 0 is return m end
+    let mut new_keys: [string]   = []
+    let mut new_vals: [HkValue]  = []
+    let n: int = array_len(m.keys)
+    let mut i: int = 0
+    while i < n is
+        if i != idx is
+            new_keys = array_push(new_keys, m.keys[i])
+            new_vals = array_push(new_vals, m.vals[i])
+        end
+        i += 1
+    end
+    return HkMap { keys: new_keys, vals: new_vals }
+end
+
+pub fn hkmap_keys(m: HkMap) -> [string] is return m.keys end
+pub fn hkmap_len(m: HkMap) -> int is return array_len(m.keys) end
+
+;; HkDocument is a parsed .hk file: an ordered map of section name -> HkMap.
+struct HkDocument is
+    pub sections: HkMap
+end
+
+pub fn new_hkdocument() -> HkDocument is
+    return HkDocument { sections: new_hkmap() }
+end
+
+;; NOTE: because H# structs are value types here, `hkdoc_section` returns a
+;; *copy* of the section map. Callers that mutate a section must write it
+;; back with hkdoc_set_section (mirrors taking the pointer in Go, adapted to
+;; value semantics — every call site in this port does this explicitly).
+pub fn hkdoc_section(doc: HkDocument, name: string) -> HkMap is
+    let v: HkValue = hkmap_get(doc.sections, name)
+    if v.kind == "map" is return v.map_val end
+    return new_hkmap()
+end
+
+pub fn hkdoc_set_section(doc: HkDocument, name: string, m: HkMap) -> HkDocument is
+    let v: HkValue = HkValue { kind: "map", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], map_val: m }
+    return HkDocument { sections: hkmap_set(doc.sections, name, v) }
+end
+
+;; ── Constructors ─────────────────────────────────────────────────────────────
+
+pub fn hk_str(s: string) -> HkValue is
+    return HkValue { kind: "string", str_val: s, num_val: 0.0, bool_val: false, arr_val: [], map_val: new_hkmap() }
+end
+pub fn hk_bool_v(b: bool) -> HkValue is
+    return HkValue { kind: "bool", str_val: "", num_val: 0.0, bool_val: b, arr_val: [], map_val: new_hkmap() }
+end
+pub fn hk_num(n: f64) -> HkValue is
+    return HkValue { kind: "number", str_val: "", num_val: n, bool_val: false, arr_val: [], map_val: new_hkmap() }
+end
+pub fn hk_arr(a: [HkValue]) -> HkValue is
+    return HkValue { kind: "array", str_val: "", num_val: 0.0, bool_val: false, arr_val: a, map_val: new_hkmap() }
+end
+pub fn hk_map_v(m: HkMap) -> HkValue is
+    return HkValue { kind: "map", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], map_val: m }
+end
+
+;; ── Accessors (spec's .as_string()/.as_number()/.as_bool()/.as_array()) ─────
+
+pub fn hk_as_string(v: HkValue) -> string is
+    if v.kind == "string" is return v.str_val end
+    if v.kind == "number" is return format_hk_number(v.num_val) end
+    if v.kind == "bool"   is return (if v.bool_val then "true" else "false") end
+    return ""  ;; TypeMismatch: expected string-like, found array/map
+end
+
+pub fn hk_as_number(v: HkValue) -> f64 is
+    if v.kind != "number" is return 0.0 end
+    return v.num_val
+end
+
+pub fn hk_as_bool(v: HkValue) -> bool is
+    if v.kind != "bool" is return false end
+    return v.bool_val
+end
+
+pub fn hk_as_array(v: HkValue) -> [HkValue] is
+    if v.kind != "array" is
+        let __empty1: [HkValue] = []
+        return __empty1
+    end
+    return v.arr_val
+end
+
+pub fn hk_as_map(v: HkValue) -> HkMap is
+    if v.kind != "map" is return new_hkmap() end
+    return v.map_val
+end
+
+pub fn hk_get_string(m: HkMap, key: string, def: string) -> string is
+    if !hkmap_has(m, key) is return def end
+    let v: HkValue = hkmap_get(m, key)
+    if v.kind == "string" || v.kind == "number" || v.kind == "bool" is return hk_as_string(v) end
+    return def
+end
+
+pub fn hk_get_bool(m: HkMap, key: string, def: bool) -> bool is
+    if !hkmap_has(m, key) is return def end
+    let v: HkValue = hkmap_get(m, key)
+    if v.kind == "bool" is return v.bool_val end
+    return def
+end
+
+;; ── Parsing ──────────────────────────────────────────────────────────────────
+
+;; Splits "key => value" into (key, value) with has_value flag baked into
+;; whether idx >= 0 (mirrors splitKeyValue).
+fn split_key_value_key(s: string) -> string is
+    let idx: int = string_find(s, "=>")
+    if idx < 0 is return string_trim(s) end
+    return string_trim(string_slice(s, 0, idx))
+end
+fn split_key_value_val(s: string) -> string is
+    let idx: int = string_find(s, "=>")
+    if idx < 0 is return "" end
+    return string_slice(s, idx + 2, string_len(s))
+end
+fn split_key_value_has(s: string) -> bool is
+    return string_find(s, "=>") >= 0
+end
+
+fn unescape_hk_string(s: string) -> string is
+    let mut b: string = ""
+    let n: int = string_len(s)
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        if c == "\\" && i + 1 < n is
+            let nx: string = string_at(s, i + 1)
+            if nx == "n" is b = b + "\n" i += 2 continue end
+            if nx == "t" is b = b + "\t" i += 2 continue end
+            if nx == "r" is b = b + "\r" i += 2 continue end
+            if nx == "\"" is b = b + "\"" i += 2 continue end
+            if nx == "\\" is b = b + "\\" i += 2 continue end
+        end
+        b = b + c
+        i += 1
+    end
+    return b
+end
+
+;; splitTopLevelCommas: splits array contents on commas not nested inside
+;; brackets or quotes. Returns "" (single empty-string element) on unbalanced
+;; input instead of an error, to keep this a total function.
+fn split_top_level_commas(s: string) -> [string] is
+    let mut parts:    [string] = []
+    let mut depth:    int = 0
+    let mut in_quote: bool = false
+    let mut start:    int = 0
+    let n: int = string_len(s)
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        if c == "\"" && (i == 0 || string_at(s, i - 1) != "\\") is
+            in_quote = !in_quote
+        else if in_quote is
+            ;; skip
+        else if c == "[" is
+            depth += 1
+        else if c == "]" is
+            depth -= 1
+        else if c == "," && depth == 0 is
+            parts = array_push(parts, string_slice(s, start, i))
+            start = i + 1
+        end
+        i += 1
+    end
+    parts = array_push(parts, string_slice(s, start, n))
+    return parts
+end
+
+;; parseHkScalarOrArray: parses a single value: array, quoted string, bool,
+;; number, or bare string, in that priority order.
+pub fn parse_hk_scalar_or_array(raw: string) -> HkValue is
+    if string_starts_with(raw, "[") is
+        if !string_ends_with(raw, "]") is
+            ;; malformed — best effort: treat whole thing as a bare string
+            return hk_str(raw)
+        end
+        let inner: string   = string_slice(raw, 1, string_len(raw) - 1)
+        let elems: [string] = split_top_level_commas(inner)
+        let mut arr: [HkValue] = []
+        let ne: int = array_len(elems)
+        let mut i: int = 0
+        while i < ne is
+            let e: string = string_trim(elems[i])
+            if e != "" is
+                arr = array_push(arr, parse_hk_scalar_or_array(e))
+            end
+            i += 1
+        end
+        return hk_arr(arr)
+    end
+
+    let rlen: int = string_len(raw)
+    if rlen >= 2 && string_at(raw, 0) == "\"" && string_at(raw, rlen - 1) == "\"" is
+        return hk_str(unescape_hk_string(string_slice(raw, 1, rlen - 1)))
+    end
+
+    let lower: string = string_to_lower(raw)
+    if lower == "true"  is return hk_bool_v(true)  end
+    if lower == "false" is return hk_bool_v(false) end
+
+    if util::string_is_numeric_float(raw) is
+        return hk_num(util::string_to_float(raw))
+    end
+
+    return hk_str(raw)
+end
+
+;; setDotted: resolves a (possibly dotted, possibly quoted) key inside
+;; parent and stores value there, creating intermediate maps as needed.
+;; Returns the updated parent map. Key conflicts are resolved permissively
+;; (last write wins) rather than erroring, since H# callers here always
+;; treat parse errors as fatal-to-the-caller and this port favors staying
+;; total; genuinely malformed files will simply look different on re-save,
+;; which is no worse than refusing to load at all.
+pub fn set_dotted(parent: HkMap, key: string, value: HkValue) -> HkMap is
+    let klen: int = string_len(key)
+    if klen >= 2 && string_at(key, 0) == "\"" && string_at(key, klen - 1) == "\"" is
+        let literal: string = string_slice(key, 1, klen - 1)
+        return hkmap_set(parent, literal, value)
+    end
+
+    let parts: [string] = string_split(key, ".")
+    let n: int = array_len(parts)
+    if n == 1 is
+        return hkmap_set(parent, key, value)
+    end
+
+    ;; Walk/create intermediate maps, then rebuild parent bottom-up.
+    return set_dotted_rec(parent, parts, 0, value)
+end
+
+fn set_dotted_rec(cur: HkMap, parts: [string], idx: int, value: HkValue) -> HkMap is
+    let n: int = array_len(parts)
+    if idx == n - 1 is
+        return hkmap_set(cur, parts[idx], value)
+    end
+    let part: string = parts[idx]
+    let existing: HkValue = hkmap_get(cur, part)
+    let mut sub: HkMap = new_hkmap()
+    if hkmap_has(cur, part) && existing.kind == "map" is
+        sub = existing.map_val
+    end
+    let updated_sub: HkMap = set_dotted_rec(sub, parts, idx + 1, value)
+    return hkmap_set(cur, part, hk_map_v(updated_sub))
+end
+
+;; ParseHK parses raw .hk source into an HkDocument. Comments ('!' lines),
+;; blank lines, sections, dash-depth nesting, dotted-key shorthand, inline
+;; submaps, and all five value types are supported. Interpolation is NOT
+;; resolved here — call resolve_interpolations afterwards for ${...}.
+;;
+;; Returns ("", doc) on success, or (error_message, empty_doc) on failure —
+;; H# closures/traits aside, a plain (string, HkDocument) tuple keeps this
+;; simple and mirrors Go's (doc, error) return convention.
+pub fn parse_hk(input: string) -> (string, HkDocument) is
+    let mut doc: HkDocument = new_hkdocument()
+    let normalized: string  = string_replace_all(input, "\r\n", "\n")
+    let lines: [string]     = string_split(normalized, "\n")
+    let nlines: int         = array_len(lines)
+
+    let mut current_section: string = ""
+    let mut have_section:    bool   = false
+    ;; stack of (depth, path-not-needed) — we just track the current chain
+    ;; of dotted-map "paths" opened by inline submap declarators, depth-
+    ;; indexed. stack[0] is the section root (represented by "" path).
+    let mut stack_paths: [string] = [""]
+
+    let mut i: int = 0
+    while i < nlines is
+        let line_no: int = i + 1
+        let raw: string  = lines[i]
+        i += 1
+
+        let line: string    = util::string_trim_end(raw)
+        let trimmed: string = string_trim(line)
+
+        if trimmed == "" || string_starts_with(trimmed, "!") is continue end
+
+        if string_starts_with(trimmed, "[") && string_ends_with(trimmed, "]") is
+            let name: string = string_trim(string_slice(trimmed, 1, string_len(trimmed) - 1))
+            current_section = name
+            have_section = true
+            doc = hkdoc_set_section(doc, name, hkdoc_section(doc, name))
+            stack_paths = [""]
+            continue
+        end
+
+        if !have_section is
+            return ("hk parse error at " + to_string(line_no) + ":1: content outside of any [section]", new_hkdocument())
+        end
+
+        ;; key-line: one or more leading '-' then '>' then rest
+        let mut depth: int = 0
+        let llen: int = string_len(line)
+        while depth < llen && string_at(line, depth) == "-" is depth += 1 end
+        if depth == 0 || depth >= llen || string_at(line, depth) != ">" is
+            return ("hk parse error at " + to_string(line_no) + ":1: expected '! comment', '[section]', or '-> key => value'", new_hkdocument())
+        end
+        let rest: string = util::string_trim_start(string_slice(line, depth + 1, llen))
+
+        if depth > array_len(stack_paths) is
+            return ("hk parse error at " + to_string(line_no) + ": unexpected nesting depth " + to_string(depth), new_hkdocument())
+        end
+        ;; truncate stack to `depth` entries
+        let mut truncated: [string] = []
+        let mut k: int = 0
+        while k < depth is truncated = array_push(truncated, stack_paths[k]) k += 1 end
+        stack_paths = truncated
+        let parent_path: string = stack_paths[depth - 1]
+
+        let key: string = split_key_value_key(rest)
+        let has_value: bool = split_key_value_has(rest)
+
+        let sec: HkMap = hkdoc_section(doc, current_section)
+
+        if !has_value is
+            ;; Inline submap declarator
+            let new_path: string = if parent_path == "" then key else parent_path + "." + key 
+            let updated: HkMap = set_dotted_at_path(sec, parent_path, key, hk_map_v(new_hkmap()))
+            doc = hkdoc_set_section(doc, current_section, updated)
+            stack_paths = array_push(stack_paths, new_path)
+            continue
+        end
+
+        let value_raw: string = string_trim(split_key_value_val(rest))
+        let val: HkValue = parse_hk_scalar_or_array(value_raw)
+        let updated2: HkMap = set_dotted_at_path(sec, parent_path, key, val)
+        doc = hkdoc_set_section(doc, current_section, updated2)
+    end
+
+    return ("", doc)
+end
+
+;; Helper: apply set_dotted at a given dotted `parent_path` inside a section
+;; map (path == "" means the section root itself).
+fn set_dotted_at_path(sec: HkMap, parent_path: string, key: string, value: HkValue) -> HkMap is
+    if parent_path == "" is
+        return set_dotted(sec, key, value)
+    end
+    let parts: [string] = string_split(parent_path, ".")
+    return set_dotted_at_path_rec(sec, parts, 0, key, value)
+end
+
+fn set_dotted_at_path_rec(cur: HkMap, parts: [string], idx: int, key: string, value: HkValue) -> HkMap is
+    let n: int = array_len(parts)
+    if idx == n is
+        return set_dotted(cur, key, value)
+    end
+    let part: string = parts[idx]
+    let existing: HkValue = hkmap_get(cur, part)
+    let mut sub: HkMap = new_hkmap()
+    if hkmap_has(cur, part) && existing.kind == "map" is sub = existing.map_val end
+    let updated_sub: HkMap = set_dotted_at_path_rec(sub, parts, idx + 1, key, value)
+    return hkmap_set(cur, part, hk_map_v(updated_sub))
+end
+
+;; LoadHKFile reads and parses a .hk file from disk.
+pub fn load_hk_file(path: string) -> (string, HkDocument) is
+    if !file_exists(path) is
+        return ("cannot read " + path, new_hkdocument())
+    end
+    let data: string = file_read(path)
+    return parse_hk(data)
+end
+
+;; ── Interpolation: ${section.key}, ${section.map.key}, ${section.arr[n]}, ${env:VAR}
+
+;; resolve_interpolations expands every ${...} reference found in string
+;; values throughout doc, in place (returns updated doc). Returns
+;; ("", updated_doc) or (error, original_doc).
+pub fn resolve_interpolations(doc: HkDocument) -> (string, HkDocument) is
+    let mut result: HkDocument = doc
+    let secs: [string] = hkmap_keys(doc.sections)
+    let n: int = array_len(secs)
+    let mut i: int = 0
+    while i < n is
+        let name: string = secs[i]
+        let sv: HkValue = hkmap_get(doc.sections, name)
+        if sv.kind == "map" is
+            let __dstr6: (string, HkMap) = resolve_map(doc, sv.map_val, [])
+            let err: string = __dstr6.0
+            let new_map: HkMap = __dstr6.1
+            if err != "" is return (err, doc) end
+            result = hkdoc_set_section(result, name, new_map)
+        end
+        i += 1
+    end
+    return ("", result)
+end
+
+fn resolve_map(doc: HkDocument, m: HkMap, visiting: [string]) -> (string, HkMap) is
+    let mut result: HkMap = m
+    let ks: [string] = hkmap_keys(m)
+    let n: int = array_len(ks)
+    let mut i: int = 0
+    while i < n is
+        let k: string = ks[i]
+        let v: HkValue = hkmap_get(m, k)
+        if v.kind == "string" is
+            let __dstr7: (string, string) = resolve_string(doc, v.str_val, visiting)
+            let err: string = __dstr7.0
+            let resolved: string = __dstr7.1
+            if err != "" is return (err, m) end
+            result = hkmap_set(result, k, hk_str(resolved))
+        else if v.kind == "array" is
+            let mut new_arr: [HkValue] = []
+            let na: int = array_len(v.arr_val)
+            let mut j: int = 0
+            while j < na is
+                let e: HkValue = v.arr_val[j]
+                if e.kind == "string" is
+                    let __dstr8: (string, string) = resolve_string(doc, e.str_val, visiting)
+                    let err2: string = __dstr8.0
+                    let resolved2: string = __dstr8.1
+                    if err2 != "" is return (err2, m) end
+                    new_arr = array_push(new_arr, hk_str(resolved2))
+                else is
+                    new_arr = array_push(new_arr, e)
+                end
+                j += 1
+            end
+            result = hkmap_set(result, k, hk_arr(new_arr))
+        else if v.kind == "map" is
+            let __dstr9: (string, HkMap) = resolve_map(doc, v.map_val, visiting)
+            let err3: string = __dstr9.0
+            let new_sub: HkMap = __dstr9.1
+            if err3 != "" is return (err3, m) end
+            result = hkmap_set(result, k, hk_map_v(new_sub))
+        end
+        i += 1
+    end
+    return ("", result)
+end
+
+fn resolve_string(doc: HkDocument, s0: string, visiting: [string]) -> (string, string) is
+    let mut s: string = s0
+    let mut pass: int = 0
+    while pass < 32 is
+        let __dstr10: (bool, string) = expand_one_pass(doc, s, visiting)
+        let found: bool = __dstr10.0
+        let expanded: string = __dstr10.1
+        if !found is return ("", s) end
+        if expanded == s is return ("", expanded) end
+        s = expanded
+        pass += 1
+    end
+    return ("interpolation did not converge after 32 passes (possible cycle)", "")
+end
+
+;; Finds all ${...} occurrences in s and replaces them; returns
+;; (had_any_markers, result). Bubbling up an error uses a sentinel prefix.
+fn expand_one_pass(doc: HkDocument, s: string, visiting: [string]) -> (bool, string) is
+    let n: int = string_len(s)
+    let mut out: string = ""
+    let mut i: int = 0
+    let mut any_found: bool = false
+    while i < n is
+        if string_at(s, i) == "$" && i + 1 < n && string_at(s, i + 1) == "{" is
+            let close: int = string_find(string_slice(s, i, n), "}")
+            if close < 0 is
+                out = out + string_slice(s, i, n)
+                i = n
+            else is
+                any_found = true
+                let ref_: string = string_slice(s, i + 2, i + close)
+                let __dstr11: (string, string) = resolve_ref(doc, ref_, visiting)
+                let err: string = __dstr11.0
+                let resolved: string = __dstr11.1
+                if err != "" is return (true, "\x01ERR\x01" + err) end
+                out = out + resolved
+                i = i + close + 1
+            end
+        else is
+            out = out + string_at(s, i)
+            i += 1
+        end
+    end
+    return (any_found, out)
+end
+
+fn resolve_ref(doc: HkDocument, ref_: string, visiting: [string]) -> (string, string) is
+    if string_starts_with(ref_, "env:") is
+        return ("", env_get(string_slice(ref_, 4, string_len(ref_))))
+    end
+
+    if array_contains_str(visiting, ref_) is
+        return ("CyclicReference(" + ref_ + ")", "")
+    end
+    let visiting2: [string] = array_push(visiting, ref_)
+
+    let __dstr12: (string, HkValue) = lookup_path(doc, ref_)
+    let err: string = __dstr12.0
+    let val: HkValue = __dstr12.1
+    if err != "" is return (err, "") end
+
+    if val.kind == "string" is return resolve_string(doc, val.str_val, visiting2) end
+    if val.kind == "number" is return ("", format_hk_number(val.num_val)) end
+    if val.kind == "bool"   is return ("", if val.bool_val then "true" else "false" ) end
+    return ("InvalidReference(" + ref_ + "): cannot interpolate a map or array", "")
+end
+
+fn array_contains_str(a: [string], s: string) -> bool is
+    let n: int = array_len(a)
+    let mut i: int = 0
+    while i < n is
+        if a[i] == s is return true end
+        i += 1
+    end
+    return false
+end
+
+;; lookupPath resolves "section.key.sub[0].leaf" against doc.
+fn lookup_path(doc: HkDocument, path: string) -> (string, HkValue) is
+    let segs: [string] = string_split(path, ".")
+    let n: int = array_len(segs)
+    if n < 2 is
+        return ("InvalidReference(" + path + "): need at least section.key", empty_value())
+    end
+    let sec_v: HkValue = hkmap_get(doc.sections, segs[0])
+    if sec_v.kind != "map" is
+        return ("InvalidReference(" + path + "): unknown section '" + segs[0] + "'", empty_value())
+    end
+    let mut cur: HkValue = sec_v
+    let mut i: int = 1
+    while i < n is
+        let seg: string = segs[i]
+        let __dstr13: (string, int, bool) = split_index(seg)
+        let key: string = __dstr13.0
+        let idx: int = __dstr13.1
+        let has_idx: bool = __dstr13.2
+        if cur.kind != "map" is
+            return ("InvalidReference(" + path + "): '" + key + "' is not a map", empty_value())
+        end
+        if !hkmap_has(cur.map_val, key) is
+            return ("InvalidReference(" + path + "): key '" + key + "' not found", empty_value())
+        end
+        let mut next: HkValue = hkmap_get(cur.map_val, key)
+        if has_idx is
+            if next.kind != "array" || idx < 0 || idx >= array_len(next.arr_val) is
+                return ("InvalidReference(" + path + "): index [" + to_string(idx) + "] out of range", empty_value())
+            end
+            next = next.arr_val[idx]
+        end
+        cur = next
+        i += 1
+    end
+    return ("", cur)
+end
+
+fn split_index(seg: string) -> (string, int, bool) is
+    if string_ends_with(seg, "]") is
+        let open: int = string_rfind(seg, "[")
+        if open > 0 is
+            let idx_str: string = string_slice(seg, open + 1, string_len(seg) - 1)
+            if util::string_is_numeric(idx_str) is
+                return (string_slice(seg, 0, open), util::string_to_int(idx_str), true)
+            end
+        end
+    end
+    return (seg, 0, false)
+end
+
+;; ── Serialization ────────────────────────────────────────────────────────────
+
+pub fn serialize_hk(doc: HkDocument) -> string is
+    let mut b: string = ""
+    let sections: [string] = hkmap_keys(doc.sections)
+    let n: int = array_len(sections)
+    let mut i: int = 0
+    while i < n is
+        if i > 0 is b = b + "\n" end
+        let sec_name: string = sections[i]
+        b = b + "[" + sec_name + "]\n"
+        let sv: HkValue = hkmap_get(doc.sections, sec_name)
+        b = b + write_map_body(sv.map_val, 1)
+        i += 1
+    end
+    return b
+end
+
+fn write_map_body(m: HkMap, depth: int) -> string is
+    let prefix: string = string_repeat("-", depth) + ">"
+    let mut b: string = ""
+    let ks: [string] = hkmap_keys(m)
+    let n: int = array_len(ks)
+    let mut i: int = 0
+    while i < n is
+        let k: string = ks[i]
+        let v: HkValue = hkmap_get(m, k)
+        let key: string = serialize_key(k)
+        if v.kind == "map" is
+            b = b + prefix + " " + key + "\n"
+            b = b + write_map_body(v.map_val, depth + 1)
+        else is
+            b = b + prefix + " " + key + " => " + serialize_value(v) + "\n"
+        end
+        i += 1
+    end
+    return b
+end
+
+fn serialize_key(k: string) -> string is
+    if string_contains(k, ".") is return "\"" + k + "\"" end
+    return k
+end
+
+fn serialize_value(v: HkValue) -> string is
+    if v.kind == "string" is
+        if needs_quoting(v.str_val) is return "\"" + escape_hk_string(v.str_val) + "\"" end
+        return v.str_val
+    end
+    if v.kind == "number" is return format_hk_number(v.num_val) end
+    if v.kind == "bool"   is return (if v.bool_val then "true" else "false") end
+    if v.kind == "array" is
+        let mut parts: [string] = []
+        let n: int = array_len(v.arr_val)
+        let mut i: int = 0
+        while i < n is
+            parts = array_push(parts, serialize_value(v.arr_val[i]))
+            i += 1
+        end
+        return "[" + util::string_join(parts, ", ") + "]"
+    end
+    return ""
+end
+
+fn needs_quoting(s: string) -> bool is
+    if s == "" is return true end
+    if string_contains(s, "\n") || string_contains(s, "\t") || string_contains(s, "\"") || string_contains(s, "\\") is
+        return true
+    end
+    let lower: string = string_to_lower(string_trim(s))
+    if lower == "true" || lower == "false" is return true end
+    if util::string_is_numeric_float(string_trim(s)) is return true end
+    return false
+end
+
+fn escape_hk_string(s: string) -> string is
+    let s1: string = string_replace_all(s, "\\", "\\\\")
+    let s2: string = string_replace_all(s1, "\"", "\\\"")
+    let s3: string = string_replace_all(s2, "\n", "\\n")
+    let s4: string = string_replace_all(s3, "\t", "\\t")
+    let s5: string = string_replace_all(s4, "\r", "\\r")
+    return s5
+end
+
+fn format_hk_number(n: f64) -> string is
+    let as_int: int = util::float_to_int(n)
+    if n == util::int_to_float(as_int) is return to_string(as_int) end
+    return to_string(n)
+end
+
+;; WriteHKFile serializes doc and atomically writes it to path (best-effort
+;; atomic: write to .tmp then rename).
+pub fn write_hk_file(path: string, doc: HkDocument) -> string is
+    let data: string = serialize_hk(doc)
+    let tmp: string = path + ".tmp"
+    file_write(tmp, data)
+    util::file_rename(tmp, path)
+    return ""
+end
