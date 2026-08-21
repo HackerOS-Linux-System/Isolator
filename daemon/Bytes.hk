@@ -3,7 +3,7 @@
 -> version     => 0.1
 -> description => Unattended scheduling daemon for Isolator maintenance commands (H# port)
 -> author      => HackerOS-Linux-System
--> license     => MIT
+-> license     => Apache-2.0
 
 [build]
 -> lang   => h#
