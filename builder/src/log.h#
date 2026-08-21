@@ -1,0 +1,9 @@
+pub fn banner() is
+    write(bold(yellow("⚠ Builder is experimental — partial/best-effort, not a production image builder yet.")))
+    write("")
+end
+
+pub fn log_step(s: string) is write(cyan("→ ") + s) end
+pub fn log_done(s: string) is write(green("✓ ") + s) end
+pub fn log_warn(s: string) is write(yellow("⚠ ") + s) end
+pub fn log_err(s: string)  is write(red("✗ ") + s) end
