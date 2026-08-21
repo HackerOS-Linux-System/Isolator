@@ -1,0 +1,633 @@
+mod util
+mod log
+mod spec
+
+;; ---------------------------------------------------------------------------
+;; Preconditions
+;; ---------------------------------------------------------------------------
+
+;; check_dependencies verifies the tools Builder itself needs. Builder is a
+;; separate binary from Isolator (its own module, its own source tree) but
+;; it's built to complement it, not replace it: it hard-requires an
+;; Isolator install to be present, both as a sanity signal that the target
+;; machine is actually set up for the Isolator ecosystem, and as the
+;; fallback bootstrap backend (see ensure_bootstrap_tool) for hosts that
+;; don't have the target distro's native bootstrap tool installed.
+;; Returns "" on success, or an error message.
+pub fn check_dependencies() -> string is
+    if util::which("isolator") == "" is
+        return "isolator not found on PATH — Builder requires an Isolator install (https://github.com/HackerOS-Linux-System/Isolator)"
+    end
+    if util::which("podman") == "" is
+        return "podman not found on PATH — required by both Isolator and Builder's container-backed bootstrap fallback"
+    end
+    return ""
+end
+
+fn bootstrap_tool_for(base: string) -> string is
+    if base == "debian" || base == "ubuntu" is return "debootstrap" end
+    if base == "archlinux" is return "pacstrap" end
+    return ""
+end
+
+;; bootstrap_helper_package is the Isolator catalog package that provides
+;; bootstrap_tool_for(base) when it isn't natively on the host — used for
+;; the container fallback path.
+fn bootstrap_helper_package(base: string) -> string is
+    if base == "debian" || base == "ubuntu" is return "debootstrap" end
+    if base == "archlinux" is return "arch-install-scripts" end
+    return ""
+end
+
+struct BootstrapToolResult is
+    pub native: bool
+    pub tool:   string
+    pub err:    string
+end
+
+;; ensure_bootstrap_tool finds (or falls back to Isolator to obtain) the
+;; tool needed to bootstrap spec.base. Two paths:
+;;
+;;  1. Fast path: the tool is already on the host's PATH — use it directly.
+;;     This is the well-tested path (validated against a real Ubuntu
+;;     `noble` bootstrap + chroot package install during development).
+;;  2. Fallback: the host doesn't have it (e.g. building a Debian-based
+;;     image from a Fedora host, or building an Arch-based image from
+;;     anywhere but Arch — pacstrap only works using the *host's* pacman).
+;;     Builder shells out to `isolator install <helper>` to get it into an
+;;     Isolator-managed container, and the bootstrap step runs inside that
+;;     container via `isolator exec`, with its output copied back out via
+;;     `podman cp`. Once copied out, the result is a completely ordinary
+;;     directory on the host — every step after bootstrapping (chroot
+;;     package install, hooks, includes, packaging) is identical
+;;     regardless of which path produced it.
+pub fn ensure_bootstrap_tool(base: string) -> BootstrapToolResult is
+    let tool: string = bootstrap_tool_for(base)
+    if tool == "" is
+        return BootstrapToolResult { native: false, tool: "", err: "no bootstrap tool known for base \"" + base + "\"" }
+    end
+    if util::which(tool) != "" is
+        return BootstrapToolResult { native: true, tool: tool, err: "" }
+    end
+
+    let helper: string = bootstrap_helper_package(base)
+    log::log_step("'" + tool + "' not found on this host — falling back to an Isolator container (installing '" + helper + "')")
+    if util::run_argv_status_visible("isolator", ["install", helper]) != 0 is
+        return BootstrapToolResult { native: false, tool: "", err: "failed to install '" + helper + "' via isolator — install '" + tool + "' manually and retry, or run Builder on a host that already has it" }
+    end
+    return BootstrapToolResult { native: false, tool: helper, err: "" }
+end
+
+;; ---------------------------------------------------------------------------
+;; Pipeline
+;; ---------------------------------------------------------------------------
+
+pub fn run_build(spec0: BuildSpec) -> string is
+    log::banner()
+
+    let dep_err: string = check_dependencies()
+    if dep_err != "" is return dep_err end
+
+    let bt: BootstrapToolResult = ensure_bootstrap_tool(spec0.base)
+    if bt.err != "" is return bt.err end
+
+    let out_abs: string = spec0.output_path + ""
+    let rootfs: string = util::path_join(out_abs, "rootfs")
+    if !util::dir_create_all(rootfs) is
+        return "creating output dir: failed to create " + rootfs
+    end
+
+    log::log_step("Bootstrapping " + spec0.base + " into " + rootfs + " (" + bool_label(bt.native, "native", "via isolator container") + ")")
+    let bootstrap_err: string = run_bootstrap(spec0, bt.tool, bt.native, rootfs)
+    if bootstrap_err != "" is return "bootstrap failed: " + bootstrap_err end
+    log::log_done("Base system bootstrapped")
+
+    ;; From here on, the pipeline is identical whether the rootfs came from
+    ;; the native path or was copied out of an Isolator container fallback
+    ;; — it's just a directory now.
+    let post_err: string = run_post_bootstrap(spec0, rootfs)
+    if post_err != "" is
+        log::log_warn("Post-bootstrap steps reported errors: " + post_err)
+    end
+
+    return package_output(spec0, rootfs, out_abs)
+end
+
+;; run_post_bootstrap installs the kernel/packages, applies includes.chroot
+;; and hooks, embeds isolator, and writes hostname/first-boot config. It's
+;; the same regardless of which base was bootstrapped, except for how
+;; packages actually get installed (apt vs pacman), because pacstrap
+;; already installs packages as part of bootstrapping — arch's package
+;; step here only handles the [packages] + package-lists extras that
+;; weren't part of the initial pacstrap call. Returns the first error
+;; encountered (if any) — later steps still run even after one fails,
+;; matching the Go original's "note first error, keep going" behaviour.
+fn run_post_bootstrap(spec0: BuildSpec, rootfs: string) -> string is
+    let mut first_err: string = ""
+
+    if spec0.base != "archlinux" is
+        log::log_step("Mounting /proc, /sys, /dev into the target rootfs")
+        let __dstr32: (string, [string]) = mount_virtual_fs(rootfs)
+        let mount_err: string = __dstr32.0
+        let mounted: [string] = __dstr32.1
+        if mount_err != "" is
+            return "mounting virtual filesystems: " + mount_err
+        end
+
+        let resolv_err: string = write_resolv_conf(rootfs)
+        if resolv_err != "" && first_err == "" is first_err = "writing resolv.conf: " + resolv_err end
+
+        let mut all_packages: [string] = [spec0.kernel_package, "podman", "ca-certificates"]
+        all_packages = array_concat(all_packages, spec0.packages)
+        log::log_step("Installing " + to_string(array_len(all_packages)) + " package(s) into the chroot: " + util::string_join(all_packages, ", "))
+        let install_err: string = chroot_apt_install(spec0, rootfs, all_packages)
+        if install_err != "" is
+            ;; Kernel postinst hooks (update-grub, depmod, initramfs
+            ;; generation) are notoriously finicky inside a bare chroot
+            ;; with no real bootloader target — warn, don't hard-fail.
+            log::log_warn("Package install reported errors (often just kernel postinst hooks like update-grub failing harmlessly in a chroot): " + install_err)
+        else is
+            log::log_done("Packages installed")
+        end
+
+        unmount_virtual_fs(rootfs, mounted)
+    else if array_len(spec0.packages) > 0 is
+        log::log_step("Installing " + to_string(array_len(spec0.packages)) + " extra package(s) via arch-chroot: " + util::string_join(spec0.packages, ", "))
+        let arch_err: string = arch_chroot_install(rootfs, spec0.packages)
+        if arch_err != "" is
+            log::log_warn("Extra package install reported errors: " + arch_err)
+        else is
+            log::log_done("Extra packages installed")
+        end
+    end
+
+    if spec0.includes_dir != "" is
+        log::log_step("Copying includes.chroot/ into the rootfs")
+        let copy_err: string = copy_tree(spec0.includes_dir, rootfs)
+        if copy_err != "" is
+            log::log_warn("includes.chroot copy had errors: " + copy_err)
+        else is
+            log::log_done("includes.chroot copied")
+        end
+    end
+
+    if array_len(spec0.hooks) > 0 is
+        log::log_step("Running " + to_string(array_len(spec0.hooks)) + " hook(s)")
+        let nh: int = array_len(spec0.hooks)
+        let mut i: int = 0
+        while i < nh is
+            let h: string = spec0.hooks[i]
+            let hook_err: string = run_hook(rootfs, h)
+            if hook_err != "" is
+                log::log_warn("hook " + base_name(h) + " failed: " + hook_err)
+            else is
+                log::log_done("hook " + base_name(h))
+            end
+            i += 1
+        end
+    end
+
+    log::log_step("Embedding the isolator binary into the image")
+    let embed_err: string = embed_isolator(rootfs)
+    if embed_err != "" is
+        log::log_warn("Could not embed isolator binary: " + embed_err)
+    else is
+        log::log_done("isolator binary embedded at /usr/local/bin/isolator")
+    end
+
+    let hostname_err: string = write_hostname(rootfs, spec0.hostname)
+    if hostname_err != "" is log::log_warn("Could not write /etc/hostname: " + hostname_err) end
+    let unit_err: string = write_first_boot_unit(rootfs)
+    if unit_err != "" is log::log_warn("Could not write first-boot systemd unit: " + unit_err) end
+
+    return first_err
+end
+
+fn base_name(p: string) -> string is
+    let slash: int = string_rfind(p, "/")
+    if slash < 0 is return p end
+    return string_slice(p, slash + 1, string_len(p))
+end
+
+;; ---------------------------------------------------------------------------
+;; Bootstrap
+;; ---------------------------------------------------------------------------
+
+fn run_bootstrap(spec0: BuildSpec, container_pkg: string, native: bool, rootfs: string) -> string is
+    if spec0.base == "archlinux" is
+        return run_pacstrap_bootstrap(spec0, container_pkg, native, rootfs)
+    end
+    return run_debootstrap_bootstrap(spec0, container_pkg, native, rootfs)
+end
+
+fn run_debootstrap_bootstrap(spec0: BuildSpec, container_pkg: string, native: bool, rootfs: string) -> string is
+    if native is
+        let args: [string] = ["--variant=minbase", "--arch=amd64", spec0.suite, rootfs, spec0.mirror]
+        if util::run_argv_status_visible("debootstrap", args) != 0 is return "debootstrap failed" end
+        return ""
+    end
+    ;; Fallback: run inside the Isolator container that
+    ;; `isolator install debootstrap` just set up, writing into that
+    ;; container's own filesystem (chroot/mount privileges live there),
+    ;; then copy the result out onto the host.
+    let cmd: string = "debootstrap --variant=minbase --arch=amd64 " + spec0.suite + " /tmp/builder-rootfs " + spec0.mirror
+    if util::run_argv_status_visible("isolator", ["exec", container_pkg, "--", "sh", "-c", cmd]) != 0 is
+        return "debootstrap failed inside the isolator container"
+    end
+    if util::run_argv_status_visible("podman", ["cp", container_pkg + ":/tmp/builder-rootfs/.", rootfs]) != 0 is
+        return "failed to copy bootstrapped rootfs out of the container"
+    end
+    return ""
+end
+
+fn run_pacstrap_bootstrap(spec0: BuildSpec, container_pkg: string, native: bool, rootfs: string) -> string is
+    let mut base_packages: [string] = ["base", "linux", "podman"]
+    base_packages = array_concat(base_packages, spec0.packages)
+
+    if native is
+        util::run_argv_status_visible("pacman-key", ["--init"])
+        util::run_argv_status_visible("pacman-key", ["--populate", "archlinux"])
+        let mut args: [string] = ["-c", "-G", rootfs]
+        args = array_concat(args, base_packages)
+        if util::run_argv_status_visible("pacstrap", args) != 0 is return "pacstrap failed" end
+        return ""
+    end
+
+    ;; Fallback: pacstrap fundamentally needs to run against a real
+    ;; pacman + keyring, which only an Arch(-based) host or an Isolator
+    ;; archlinux container actually has. Run it there instead, targeting a
+    ;; path inside the container, then copy the result out — same pattern
+    ;; as the debootstrap fallback.
+    let init_cmd: string = "pacman-key --init && pacman-key --populate archlinux"
+    if util::run_argv_status_visible("isolator", ["exec", container_pkg, "--", "sh", "-c", init_cmd]) != 0 is
+        log::log_warn("pacman-key init inside the container reported an issue (continuing — it may already be initialized)")
+    end
+    let pacstrap_cmd: string = "pacstrap -c -G /tmp/builder-rootfs " + util::string_join(base_packages, " ")
+    if util::run_argv_status_visible("isolator", ["exec", container_pkg, "--", "sh", "-c", pacstrap_cmd]) != 0 is
+        return "pacstrap failed inside the isolator container"
+    end
+    if util::run_argv_status_visible("podman", ["cp", container_pkg + ":/tmp/builder-rootfs/.", rootfs]) != 0 is
+        return "failed to copy bootstrapped rootfs out of the container"
+    end
+    return ""
+end
+
+;; ---------------------------------------------------------------------------
+;; chroot helpers
+;; ---------------------------------------------------------------------------
+
+;; mount_virtual_fs bind-mounts proc/sys/dev into rootfs, returning ("",
+;; mounted) on success or (error, partial_list) — caller should still pass
+;; the partial list to unmount_virtual_fs to clean up whatever did mount.
+fn mount_virtual_fs(rootfs: string) -> (string, [string]) is
+    let mounts: [string] = ["proc", "sys", "dev"]
+    let mut mounted: [string] = []
+    let n: int = array_len(mounts)
+    let mut i: int = 0
+    while i < n is
+        let m: string = mounts[i]
+        let target: string = util::path_join(rootfs, m)
+        if !util::dir_create_all(target) is return ("failed to create " + target, mounted) end
+        if util::run_argv_status_visible("mount", ["--bind", "/" + m, target]) != 0 is
+            unmount_virtual_fs(rootfs, mounted)
+            return ("failed to bind-mount /" + m, mounted)
+        end
+        mounted = array_push(mounted, m)
+        i += 1
+    end
+    return ("", mounted)
+end
+
+fn unmount_virtual_fs(rootfs: string, mounted: [string]) is
+    let n: int = array_len(mounted)
+    let mut i: int = n - 1
+    while i >= 0 is
+        util::run_argv_status_visible("umount", [util::path_join(rootfs, mounted[i])])
+        i -= 1
+    end
+end
+
+fn write_resolv_conf(rootfs: string) -> string is
+    if !file_exists("/etc/resolv.conf") is return "cannot read /etc/resolv.conf" end
+    let data: string = file_read("/etc/resolv.conf")
+    file_write(util::path_join(rootfs, "etc/resolv.conf"), data)
+    return ""
+end
+
+fn chroot_apt_install(spec0: BuildSpec, rootfs: string, packages: [string]) -> string is
+    let mut sources_line: string = "deb " + spec0.mirror + " " + spec0.suite + " main universe\n"
+    if spec0.base == "debian" is
+        sources_line = "deb " + spec0.mirror + " " + spec0.suite + " main\n"
+    end
+    if !util::dir_create_all(util::path_join(rootfs, "etc/apt")) is
+        return "failed to create etc/apt"
+    end
+    file_write(util::path_join(rootfs, "etc/apt/sources.list"), sources_line)
+
+    let update_inner: string = "apt-get update -qq"
+    let update_cmd: string = "DEBIAN_FRONTEND=noninteractive chroot " + util::shell_quote(rootfs) + " /bin/sh -c " + util::shell_quote(update_inner)
+    if util::system_visible(update_cmd) != 0 is return "apt-get update failed" end
+
+    let install_inner: string = "apt-get install -y --no-install-recommends " + util::string_join(packages, " ")
+    let install_cmd: string = "DEBIAN_FRONTEND=noninteractive chroot " + util::shell_quote(rootfs) + " /bin/sh -c " + util::shell_quote(install_inner)
+    if util::system_visible(install_cmd) != 0 is return "apt-get install failed" end
+    return ""
+end
+
+;; arch_chroot_install installs extra packages into an already-pacstrapped
+;; rootfs using arch-chroot (from arch-install-scripts), which handles the
+;; /proc,/sys,/dev binds itself — unlike our manual mount_virtual_fs
+;; approach used for the apt-based pipeline.
+fn arch_chroot_install(rootfs: string, packages: [string]) -> string is
+    if util::which("arch-chroot") == "" is
+        ;; Fall back to a plain chroot with our own virtual-fs mounts if
+        ;; arch-chroot itself isn't available on this host.
+        let __dstr33: (string, [string]) = mount_virtual_fs(rootfs)
+        let mount_err: string = __dstr33.0
+        let mounted: [string] = __dstr33.1
+        if mount_err != "" is return mount_err end
+        let inner: string = "pacman -S --noconfirm " + util::string_join(packages, " ")
+        let rc: int = util::run_argv_status_visible("chroot", [rootfs, "/bin/sh", "-c", inner])
+        unmount_virtual_fs(rootfs, mounted)
+        if rc != 0 is return "chroot pacman install failed" end
+        return ""
+    end
+    let rc: int = util::run_argv_status_visible("arch-chroot", [rootfs, "pacman", "-S", "--noconfirm", util::string_join(packages, " ")])
+    if rc != 0 is return "arch-chroot pacman install failed" end
+    return ""
+end
+
+fn run_hook(rootfs: string, hook_path: string) -> string is
+    let name: string = base_name(hook_path)
+    let dest: string = util::path_join(util::path_join(rootfs, "tmp"), name)
+    if !file_exists(hook_path) is return "cannot read " + hook_path end
+    let data: string = file_read(hook_path)
+    file_write(dest, data)
+    util::run_capture("chmod 755 " + util::shell_quote(dest))
+
+    let inner: string = "/tmp/" + name
+    let rc: int = util::run_argv_status_visible("chroot", [rootfs, "/bin/sh", "-c", inner])
+    if file_exists(dest) is file_delete(dest) end
+    if rc != 0 is return "hook exited non-zero" end
+    return ""
+end
+
+fn embed_isolator(rootfs: string) -> string is
+    let src: string = util::which("isolator")
+    if src == "" is return "isolator not found on PATH" end
+    let dest: string = util::path_join(rootfs, "usr/local/bin/isolator")
+    if !util::dir_create_all(util::path_join(rootfs, "usr/local/bin")) is return "failed to create usr/local/bin" end
+    if !util::copy_file(src, dest) is return "failed to copy isolator binary" end
+    util::run_capture("chmod 755 " + util::shell_quote(dest))
+    return ""
+end
+
+fn write_hostname(rootfs: string, hostname: string) -> string is
+    let etc_dir: string = util::path_join(rootfs, "etc")
+    if !util::dir_create_all(etc_dir) is return "failed to create " + etc_dir end
+    file_write(util::path_join(etc_dir, "hostname"), hostname + "\n")
+    return ""
+end
+
+;; write_first_boot_unit drops a systemd unit that runs `isolator init` the
+;; first time the built image actually boots, so it arrives with Isolator
+;; already set up instead of requiring a manual first step.
+fn write_first_boot_unit(rootfs: string) -> string is
+    let unit: string =
+        "[Unit]\n" +
+        "Description=Isolator first-boot setup\n" +
+        "ConditionPathExists=!/etc/isolator-first-boot-done\n" +
+        "After=network-online.target\n" +
+        "Wants=network-online.target\n\n" +
+        "[Service]\n" +
+        "Type=oneshot\n" +
+        "ExecStart=/usr/local/bin/isolator init\n" +
+        "ExecStartPost=/usr/bin/touch /etc/isolator-first-boot-done\n" +
+        "RemainAfterExit=yes\n\n" +
+        "[Install]\n" +
+        "WantedBy=multi-user.target\n"
+
+    let unit_dir: string = util::path_join(rootfs, "etc/systemd/system")
+    if !util::dir_create_all(unit_dir) is return "failed to create " + unit_dir end
+    file_write(util::path_join(unit_dir, "isolator-first-boot.service"), unit)
+
+    let wants_dir: string = util::path_join(unit_dir, "multi-user.target.wants")
+    if !util::dir_create_all(wants_dir) is return "failed to create " + wants_dir end
+    let link: string = util::path_join(wants_dir, "isolator-first-boot.service")
+    util::run_capture("rm -f " + util::shell_quote(link))
+    let __dstr34: (int, string) = util::run_capture("ln -s ../isolator-first-boot.service " + util::shell_quote(link))
+    let rc: int = __dstr34.0
+    let _out: string = __dstr34.1
+    if rc != 0 is return "failed to symlink into multi-user.target.wants" end
+    return ""
+end
+
+;; ---------------------------------------------------------------------------
+;; Packaging
+;; ---------------------------------------------------------------------------
+
+fn package_output(spec0: BuildSpec, rootfs: string, out_abs: string) -> string is
+    if spec0.output_format == "rootfs" is return package_rootfs_fallback(spec0, rootfs, out_abs) end
+    if spec0.output_format == "iso"    is return package_iso(spec0, rootfs, out_abs) end
+    if spec0.output_format == "qcow2"  is return package_qcow2(spec0, rootfs, out_abs) end
+    return "unknown output format \"" + spec0.output_format + "\""
+end
+
+fn package_iso(spec0: BuildSpec, rootfs: string, out_abs: string) -> string is
+    log::log_warn("ISO output is experimental and needs grub-mkrescue + xorriso on the host.")
+    if util::which("grub-mkrescue") == "" is
+        log::log_warn("grub-mkrescue not found — falling back to a rootfs tarball only.")
+        return package_rootfs_fallback(spec0, rootfs, out_abs)
+    end
+    if util::which("xorriso") == "" is
+        log::log_warn("xorriso not found — falling back to a rootfs tarball only.")
+        return package_rootfs_fallback(spec0, rootfs, out_abs)
+    end
+    let iso_path: string = util::path_join(out_abs, spec0.name + ".iso")
+    log::log_step("Building ISO with grub-mkrescue: " + iso_path)
+    if util::run_argv_status_visible("grub-mkrescue", ["-o", iso_path, rootfs]) != 0 is
+        log::log_warn("grub-mkrescue failed — falling back to a rootfs tarball only.")
+        return package_rootfs_fallback(spec0, rootfs, out_abs)
+    end
+    log::log_done("Wrote " + iso_path)
+    return write_checksum_file(iso_path)
+end
+
+;; package_qcow2 builds a real, bootable(-ish) raw disk image and converts
+;; it to qcow2: partition table + ext4 filesystem + rootfs copy +
+;; grub-install targeting that disk, then `qemu-img convert`. Every
+;; external tool it needs is checked up front, with a clear fallback to a
+;; plain rootfs tarball if any of them is missing — this path needs
+;; loop-device and mount privileges and has NOT been exercised against a
+;; real boot (no VM available to test in during development); treat it as
+;; a best-effort implementation, not a verified one.
+fn package_qcow2(spec0: BuildSpec, rootfs: string, out_abs: string) -> string is
+    log::log_warn("qcow2 output is experimental: partitioning + grub-install + qemu-img convert, not yet verified against an actual boot.")
+
+    let required: [string] = ["qemu-img", "sfdisk", "losetup", "mkfs.ext4", "grub-install", "partprobe"]
+    let nr: int = array_len(required)
+    let mut ri: int = 0
+    while ri < nr is
+        let tool: string = required[ri]
+        if util::which(tool) == "" is
+            log::log_warn("'" + tool + "' not found — falling back to a rootfs tarball only.")
+            return package_rootfs_fallback(spec0, rootfs, out_abs)
+        end
+        ri += 1
+    end
+
+    let raw_path: string = util::path_join(out_abs, spec0.name + ".raw")
+    let qcow_path: string = util::path_join(out_abs, spec0.name + ".qcow2")
+    let size_mb: int = estimate_image_size_mb(rootfs)
+
+    log::log_step("Creating " + to_string(size_mb) + "MB raw disk image: " + raw_path)
+    if util::run_argv_status_visible("qemu-img", ["create", "-f", "raw", raw_path, to_string(size_mb) + "M"]) != 0 is
+        return "qemu-img create failed"
+    end
+
+    log::log_step("Partitioning (single bootable ext4 partition + BIOS boot partition for grub)")
+    let sfdisk_script: string =
+        "label: gpt\n" +
+        "start=2048,size=2048,type=21686148-6449-6E6F-744E-656564454649,name=\"BIOS boot\"\n" +
+        "start=4096,type=0FC63DAF-8483-4772-8E79-3D69D8477DE4,name=\"root\"\n"
+    let sfdisk_cmd: string = "printf '%s' " + util::shell_quote(sfdisk_script) + " | sfdisk " + util::shell_quote(raw_path)
+    if util::system_visible(sfdisk_cmd) != 0 is
+        file_delete_if_exists(raw_path)
+        return "sfdisk failed"
+    end
+
+    let __dstr35: (string, string) = setup_loop_device(raw_path)
+    let loop_dev: string = __dstr35.0
+    let loop_err: string = __dstr35.1
+    if loop_err != "" is
+        file_delete_if_exists(raw_path)
+        return "losetup failed: " + loop_err
+    end
+    util::run_argv_status_visible("partprobe", [loop_dev])
+
+    let root_part: string = loop_dev + "p2"
+    log::log_step("Formatting root partition ext4: " + root_part)
+    if util::run_argv_status_visible("mkfs.ext4", ["-F", "-L", "root", root_part]) != 0 is
+        util::run_argv_status_visible("losetup", ["-d", loop_dev])
+        file_delete_if_exists(raw_path)
+        return "mkfs.ext4 failed"
+    end
+
+    let mount_point: string = "/tmp/isolator-builder-mnt-" + to_string(proc_id()) + "-" + to_string(time_ms())
+    util::dir_create_all(mount_point)
+
+    if util::run_argv_status_visible("mount", [root_part, mount_point]) != 0 is
+        util::run_argv_status_visible("losetup", ["-d", loop_dev])
+        util::dir_remove_all(mount_point)
+        file_delete_if_exists(raw_path)
+        return "mount of root partition failed"
+    end
+
+    log::log_step("Copying rootfs into the disk image")
+    let copy_err: string = copy_tree(rootfs, mount_point)
+    if copy_err != "" is
+        util::run_argv_status_visible("umount", [mount_point])
+        util::run_argv_status_visible("losetup", ["-d", loop_dev])
+        util::dir_remove_all(mount_point)
+        file_delete_if_exists(raw_path)
+        return "copying rootfs into image: " + copy_err
+    end
+
+    log::log_step("Installing GRUB onto the disk image: " + loop_dev)
+    if util::run_argv_status_visible("grub-install", [
+        "--target=i386-pc",
+        "--boot-directory=" + util::path_join(mount_point, "boot"),
+        "--modules=part_gpt ext2",
+        loop_dev,
+    ]) != 0 is
+        log::log_warn("grub-install reported errors — the image was still produced but may not boot")
+    end
+
+    util::run_argv_status_visible("umount", [mount_point])
+    util::run_argv_status_visible("losetup", ["-d", loop_dev])
+    util::dir_remove_all(mount_point)
+
+    log::log_step("Converting raw image to qcow2: " + qcow_path)
+    if util::run_argv_status_visible("qemu-img", ["convert", "-f", "raw", "-O", "qcow2", raw_path, qcow_path]) != 0 is
+        file_delete_if_exists(raw_path)
+        return "qemu-img convert failed"
+    end
+    ;; only the qcow2 is the deliverable; drop the intermediate raw file
+    file_delete_if_exists(raw_path)
+    log::log_done("Wrote " + qcow_path)
+    return write_checksum_file(qcow_path)
+end
+
+fn file_delete_if_exists(path: string) is
+    if file_exists(path) is file_delete(path) end
+end
+
+;; setup_loop_device attaches path to a free loop device and returns its
+;; path (e.g. "/dev/loop7"), using `losetup --show -f` so we get the
+;; assigned device name back directly instead of parsing `losetup -a`.
+;; Returns (device, "") on success, or ("", error).
+fn setup_loop_device(path: string) -> (string, string) is
+    let __dstr36: (int, string) = util::run_capture("losetup --show -f -P " + util::shell_quote(path))
+    let rc: int = __dstr36.0
+    let out: string = __dstr36.1
+    if rc != 0 is return ("", "losetup failed") end
+    return (string_trim(out), "")
+end
+
+;; estimate_image_size_mb sizes the raw disk as rootfs contents + 30%
+;; headroom + a fixed 512MB floor, so small rootfs's still get enough
+;; slack for package manager metadata/logs/growth.
+fn estimate_image_size_mb(rootfs: string) -> int is
+    let total_bytes: int = util::du_bytes(rootfs)
+    let mut mb: int = total_bytes / (1024 * 1024) + 64  ;; +64MB for partition table + boot
+    mb = mb + mb * 3 / 10                                ;; +30% headroom
+    if mb < 512 is mb = 512 end
+    return mb
+end
+
+fn package_rootfs_fallback(spec0: BuildSpec, rootfs: string, out_abs: string) -> string is
+    let tar_path: string = util::path_join(out_abs, spec0.name + "-rootfs.tar.gz")
+    log::log_step("Packaging rootfs tarball: " + tar_path)
+    if util::run_argv_status_visible("tar", ["-C", rootfs, "-czf", tar_path, "."]) != 0 is
+        return "tar packaging failed"
+    end
+    log::log_done("Wrote " + tar_path)
+    return write_checksum_file(tar_path)
+end
+
+;; write_checksum_file computes the SHA-256 of path and writes it as a
+;; "<hex>  <filename>\n" sidecar (the same sha256sum-compatible format
+;; Isolator itself uses for package-list.json.sha256), so anyone
+;; distributing a built image can let recipients verify it wasn't
+;; corrupted or tampered with in transit. Returns "" on success, or an
+;; error message.
+fn write_checksum_file(path: string) -> string is
+    let sum: string = util::sha256_file_hex(path)
+    if sum == "" is return "failed to compute checksum for " + path end
+    let sidecar: string = path + ".sha256"
+    let line: string = sum + "  " + base_name(path) + "\n"
+    file_write(sidecar, line)
+    log::log_done("Checksum written: " + sidecar)
+    return ""
+end
+
+;; ---------------------------------------------------------------------------
+;; small utilities
+;; ---------------------------------------------------------------------------
+
+;; copy_tree recursively copies src into dst, preserving structure and
+;; symlinks, via `cp -a` (binary-safe, permission-preserving — matches the
+;; Go original's filepath.Walk-based copy closely enough for this tool's
+;; purposes). Returns "" on success, or an error message.
+fn copy_tree(src: string, dst: string) -> string is
+    if !util::dir_create_all(dst) is return "failed to create " + dst end
+    let __dstr37: (int, string) = util::run_capture("cp -a " + util::shell_quote(src) + "/. " + util::shell_quote(dst) + "/")
+    let rc: int = __dstr37.0
+    let out: string = __dstr37.1
+    if rc != 0 is return "cp -a failed: " + out end
+    return ""
+end
+
+fn bool_label(b: bool, if_true: string, if_false: string) -> string is
+    return if b then if_true else if_false 
+end
