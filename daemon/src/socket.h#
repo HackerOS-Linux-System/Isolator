@@ -1,0 +1,145 @@
+use "std -> json" from "json"
+
+mod util
+mod scheduler
+mod config
+mod log
+
+fn requests_dir(socket_path: string) -> string is
+    return socket_path + ".d"
+end
+
+pub fn ensure_requests_dir(socket_path: string) is
+    util::dir_create_all(requests_dir(socket_path))
+end
+
+;; ── Server side ──────────────────────────────────────────────────────────────
+
+;; poll_and_serve checks for exactly one pending request and answers it (if
+;; any), returning the possibly-updated Scheduler. Called once per second
+;; from the main loop.
+pub fn poll_and_serve(s0: Scheduler, socket_path: string, started_at_ms: int) -> Scheduler is
+    let mut s: Scheduler = s0
+    let dir: string = requests_dir(socket_path)
+    let entries: [string] = util::list_dir_names(dir)
+    let n: int = array_len(entries)
+    let mut i: int = 0
+    while i < n is
+        let name: string = entries[i]
+        if string_ends_with(name, ".request.json") is
+            let req_path: string = util::path_join(dir, name)
+            let id: string = string_slice(name, 0, string_len(name) - string_len(".request.json"))
+            let resp_path: string = util::path_join(dir, id + ".response.json")
+            let raw: string = file_read(req_path)
+            let response: string = handle_request(s, raw, started_at_ms)
+            ;; handle_request only reads scheduler state (status) or
+            ;; triggers a task synchronously (trigger) — trigger doesn't
+            ;; change last_run bookkeeping (mirrors the Go original: the
+            ;; regular scheduler loop, not the socket's trigger path, owns
+            ;; lastRun).
+            file_write(resp_path, response)
+            if file_exists(req_path) is file_delete(req_path) end
+        end
+        i += 1
+    end
+    return s
+end
+
+fn handle_request(s: Scheduler, raw: string, started_at_ms: int) -> string is
+    let req: any = json::parse(raw)
+    if req == nil is
+        return error_response("invalid JSON")
+    end
+    let action: string = json::get_str(req, "action")
+
+    if action == "status" is
+        return status_response(s, started_at_ms)
+    end
+    if action == "trigger" is
+        let task: string = json::get_str(req, "task")
+        let dry_run: bool = json::get_bool(req, "dry_run")
+        let err: string = scheduler::trigger_now(task, dry_run)
+        if err != "" is return error_response(err) end
+        return "{\"ok\":true}"
+    end
+    return error_response("unknown action " + action)
+end
+
+fn error_response(msg: string) -> string is
+    return "{\"ok\":false,\"error\":" + json_escape(msg) + "}"
+end
+
+fn json_escape(s: string) -> string is
+    let s1: string = string_replace_all(s, "\\", "\\\\")
+    let s2: string = string_replace_all(s1, "\"", "\\\"")
+    let s3: string = string_replace_all(s2, "\n", "\\n")
+    return "\"" + s3 + "\""
+end
+
+fn status_response(s: Scheduler, started_at_ms: int) -> string is
+    let uptime_secs: int = (time_ms() - started_at_ms) / 1000
+    let mut last_run_json: string = "{"
+    let n: int = array_len(s.last_run)
+    let mut i: int = 0
+    while i < n is
+        if i > 0 is last_run_json = last_run_json + "," end
+        let tr: TaskRun = s.last_run[i]
+        last_run_json = last_run_json + json_escape(tr.name) + ":" + json_escape(util::format_rfc3339(tr.last_run_ms / 1000))
+        i += 1
+    end
+    last_run_json = last_run_json + "}"
+
+    return "{\"ok\":true,\"status\":{" +
+        "\"uptime_secs\":" + to_string(uptime_secs) + "," +
+        "\"last_run\":" + last_run_json + "," +
+        "\"update_interval_secs\":" + to_string(s.cfg.update_interval_secs) + "," +
+        "\"autoremove_interval_secs\":" + to_string(s.cfg.autoremove_interval_secs) + "," +
+        "\"clean_interval_secs\":" + to_string(s.cfg.clean_interval_secs) +
+        "}}"
+end
+
+;; ── Client side ──────────────────────────────────────────────────────────────
+
+struct QueryResult is
+    pub ok:       bool
+    pub reached:  bool     ;; false if the daemon never answered (timeout)
+    pub error:    string
+    pub body:     string   ;; raw JSON of the "status" object, if any
+end
+
+;; query_daemon is the client side used by `daemon status`/`daemon
+;; trigger` when talking to an already-running daemon over the file-based
+;; IPC described above. Polls for up to 2 seconds (matching the Go
+;; original's net.DialTimeout(2 * time.Second)) before giving up.
+pub fn query_daemon(socket_path: string, action: string, task: string, dry_run: bool) -> QueryResult is
+    let dir: string = requests_dir(socket_path)
+    if !util::dir_exists(dir) is
+        return QueryResult { ok: false, reached: false, error: "no daemon request directory at " + dir, body: "" }
+    end
+
+    let id: string = to_string(proc_id()) + "-" + to_string(time_ms())
+    let req_path: string = util::path_join(dir, id + ".request.json")
+    let resp_path: string = util::path_join(dir, id + ".response.json")
+
+    let mut req_json: string = "{\"action\":" + json_escape(action)
+    if task != "" is req_json = req_json + ",\"task\":" + json_escape(task) end
+    if dry_run is req_json = req_json + ",\"dry_run\":true" end
+    req_json = req_json + "}"
+    file_write(req_path, req_json)
+
+    let mut waited_ms: int = 0
+    while waited_ms < 2000 is
+        if file_exists(resp_path) is
+            let body: string = file_read(resp_path)
+            file_delete(resp_path)
+            let obj: any = json::parse(body)
+            let ok: bool = json::get_bool(obj, "ok")
+            let err: string = json::get_str(obj, "error")
+            return QueryResult { ok: ok, reached: true, error: err, body: body }
+        end
+        util::sleep_secs(1)
+        waited_ms = waited_ms + 1000
+    end
+    if file_exists(req_path) is file_delete(req_path) end
+    return QueryResult { ok: false, reached: false, error: "timed out waiting for daemon response", body: "" }
+end
