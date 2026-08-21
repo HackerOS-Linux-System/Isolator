@@ -1,0 +1,435 @@
+extern dynamic [c] is
+    fn system(cmd: string) -> int
+end
+
+;; ── Strings ──────────────────────────────────────────────────────────────────
+
+pub fn string_trim_start(s: string) -> string is
+    let n: int = string_len(s)
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        if c != " " && c != "\t" && c != "\n" && c != "\r" is break end
+        i += 1
+    end
+    return string_slice(s, i, n)
+end
+
+pub fn string_trim_end(s: string) -> string is
+    return string_trim_right(s)
+end
+
+pub fn string_join(parts: [string], sep: string) -> string is
+    let mut out: string = ""
+    let n: int = array_len(parts)
+    let mut i: int = 0
+    while i < n is
+        if i > 0 is out = out + sep end
+        out = out + parts[i]
+        i += 1
+    end
+    return out
+end
+
+pub fn string_replace_all(s: string, from: string, to: string) -> string is
+    return string_replace(s, from, to)
+end
+
+pub fn string_is_numeric(s: string) -> bool is
+    if s == "" is return false end
+    let n: int = string_len(s)
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        if c < "0" || c > "9" is return false end
+        i += 1
+    end
+    return true
+end
+
+;; Accepts an optional leading '-' and at most one '.', matching what
+;; strconv.ParseFloat would accept for the plain decimal forms .hk files use.
+pub fn string_is_numeric_float(raw: string) -> bool is
+    let s: string = string_trim(raw)
+    if s == "" is return false end
+    let n: int = string_len(s)
+    let mut i: int = 0
+    if string_at(s, 0) == "-" || string_at(s, 0) == "+" is i = 1 end
+    if i >= n is return false end
+    let mut seen_digit: bool = false
+    let mut seen_dot:   bool = false
+    while i < n is
+        let c: string = string_at(s, i)
+        if c >= "0" && c <= "9" is
+            seen_digit = true
+        else if c == "." && !seen_dot is
+            seen_dot = true
+        else is
+            return false
+        end
+        i += 1
+    end
+    return seen_digit
+end
+
+pub fn string_to_int(s: string) -> int is
+    ;; Manual digit-by-digit parse (avoids the free-function parse_int's
+    ;; `int?` Optional return, which the H# type checker does not narrow
+    ;; to plain `int` after a `== nil` guard — returning `r` directly after
+    ;; the guard is a return-type mismatch at compile time). Accepts an
+    ;; optional leading '-'/'+' and ignores surrounding whitespace (already
+    ;; trimmed by callers); non-digit characters after the sign simply stop
+    ;; the scan, matching strconv.Atoi-ish "parse as much as is valid"
+    ;; behavior closely enough for this codebase's uses (trimmed shell
+    ;; command output, .hk numeric literals).
+    let t: string = string_trim(s)
+    let n: int = string_len(t)
+    let mut i: int = 0
+    let mut neg: bool = false
+    if n > 0 && (string_at(t, 0) == "-" || string_at(t, 0) == "+") is
+        neg = string_at(t, 0) == "-"
+        i = 1
+    end
+    let mut result: int = 0
+    while i < n is
+        let c: string = string_at(t, i)
+        if c < "0" || c > "9" is
+            i = n
+        else is
+            result = result * 10 + digit_val(c)
+            i += 1
+        end
+    end
+    return if neg then 0 - result else result 
+end
+
+pub fn string_to_float(s: string) -> f64 is
+    ;; No free-function float parser is guaranteed; build it from digits.
+    let t: string = string_trim(s)
+    let n: int = string_len(t)
+    let mut i: int = 0
+    let mut neg: bool = false
+    if n > 0 && (string_at(t, 0) == "-" || string_at(t, 0) == "+") is
+        neg = string_at(t, 0) == "-"
+        i = 1
+    end
+    let mut int_part: f64 = 0.0
+    while i < n && string_at(t, i) != "." is
+        let d: int = digit_val(string_at(t, i))
+        int_part = int_part * 10.0 + int_to_float(d)
+        i += 1
+    end
+    let mut frac: f64 = 0.0
+    let mut scale: f64 = 0.1
+    if i < n && string_at(t, i) == "." is
+        i += 1
+        while i < n is
+            let d: int = digit_val(string_at(t, i))
+            frac = frac + int_to_float(d) * scale
+            scale = scale / 10.0
+            i += 1
+        end
+    end
+    let result: f64 = int_part + frac
+    return if neg then 0.0 - result else result 
+end
+
+fn digit_val(c: string) -> int is
+    if c == "0" is return 0 end
+    if c == "1" is return 1 end
+    if c == "2" is return 2 end
+    if c == "3" is return 3 end
+    if c == "4" is return 4 end
+    if c == "5" is return 5 end
+    if c == "6" is return 6 end
+    if c == "7" is return 7 end
+    if c == "8" is return 8 end
+    if c == "9" is return 9 end
+    return 0
+end
+
+pub fn int_to_float(n: int) -> f64 is
+    return n as f64
+end
+
+pub fn float_to_int(f: f64) -> int is
+    return f as int
+end
+
+;; ── Process execution (argv-safe) ───────────────────────────────────────────
+
+pub fn shell_quote(s: string) -> string is
+    ;; POSIX single-quote: end quote, escaped literal quote, reopen quote.
+    let escaped: string = string_replace_all(s, "'", "'\\''")
+    return "'" + escaped + "'"
+end
+
+pub fn quote_argv(args: [string]) -> string is
+    let mut parts: [string] = []
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        parts = array_push(parts, shell_quote(args[i]))
+        i += 1
+    end
+    return string_join(parts, " ")
+end
+
+;; run_argv executes `bin arg0 arg1 ...` (each arg shell-quoted) and returns
+;; (exit_code, combined_stdout+stderr) — the H# analogue of Go's
+;; exec.Command(bin, args...).CombinedOutput().
+pub fn run_argv(bin: string, args: [string]) -> (int, string) is
+    let cmd: string = shell_quote(bin) + " " + quote_argv(args)
+    return run_capture(cmd)
+end
+
+;; run_capture executes a raw shell command string and returns
+;; (exit_code, combined_output), using a temp file the same way bytes'
+;; build.h# does (system() only gives an exit code, not captured output).
+pub fn run_capture(cmd: string) -> (int, string) is
+    let tmp: string = "/tmp/isolator_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".out"
+    let rc: int = system(cmd + " >" + tmp + " 2>&1")
+    let out: string = if file_exists(tmp) then file_read(tmp) else "" 
+    if file_exists(tmp) is file_delete(tmp) end
+    return (rc, out)
+end
+
+;; run_status executes argv and returns only the exit code (like
+;; ExecCommand's bool return — ok := status == 0).
+pub fn run_argv_status(bin: string, args: [string]) -> int is
+    let cmd: string = shell_quote(bin) + " " + quote_argv(args)
+    return system(cmd)
+end
+
+;; run_argv_status_visible runs argv WITHOUT redirecting stdout/stderr, so
+;; the child's own output (progress bars, prompts, etc.) reaches the
+;; terminal directly — used where the Go original relied on
+;; cmd.Stdout/Stderr = os.Stdout for a passthrough (e.g. `isolator exec`).
+pub fn run_argv_status_visible(bin: string, args: [string]) -> int is
+    let cmd: string = shell_quote(bin) + " " + quote_argv(args)
+    return system(cmd)
+end
+
+;; system_visible runs a raw shell command string with stdout/stderr
+;; passed straight through to the terminal (unlike run_capture, which
+;; redirects to a temp file). Used for chroot/mount-style commands piped
+;; together with shell operators (&&, |, redirections) that can't be
+;; expressed as a plain argv list.
+pub fn system_visible(cmd: string) -> int is
+    return system(cmd)
+end
+
+;; ── Filesystem ───────────────────────────────────────────────────────────────
+
+pub fn path_join(a: string, b: string) -> string is
+    if a == "" is return b end
+    if string_ends_with(a, "/") is return a + b end
+    return a + "/" + b
+end
+
+pub fn dir_create_all(path: string) -> bool is
+    if dir_exists(path) is return true end
+    dir_create(path)
+    return dir_exists(path)
+end
+
+;; list_dir_names: names (not full paths) of entries directly inside `path`,
+;; via `ls -1a` (minus "." and ".."), since there is no native directory
+;; listing builtin. Silent empty list if the directory doesn't exist.
+pub fn list_dir_names(path: string) -> [string] is
+    if !dir_exists(path) is
+        let __empty1: [string] = []
+        return __empty1
+    end
+    let __dstr40: (int, string) = run_capture("ls -1a " + shell_quote(path))
+    let rc: int = __dstr40.0
+    let out: string = __dstr40.1
+    if rc != 0 is
+        let __empty2: [string] = []
+        return __empty2
+    end
+    let lines: [string] = string_split(out, "\n")
+    let mut result: [string] = []
+    let n: int = array_len(lines)
+    let mut i: int = 0
+    while i < n is
+        let l: string = string_trim(lines[i])
+        if l != "" && l != "." && l != ".." is
+            result = array_push(result, l)
+        end
+        i += 1
+    end
+    return result
+end
+
+pub fn path_exists(path: string) -> bool is
+    return file_exists(path) || dir_exists(path)
+end
+
+pub fn file_rename(src: string, dst: string) -> bool is
+    let __dstr41: (int, string) = run_capture("mv " + shell_quote(src) + " " + shell_quote(dst))
+    let rc: int = __dstr41.0
+    let _out: string = __dstr41.1
+    return rc == 0
+end
+
+pub fn dir_remove_all(path: string) -> bool is
+    let __dstr42: (int, string) = run_capture("rm -rf " + shell_quote(path))
+    let rc: int = __dstr42.0
+    let _out: string = __dstr42.1
+    return rc == 0
+end
+
+;; sha256_file_hex: SHA-256 of a file's contents via `sha256sum`, safe for
+;; arbitrary binary data (unlike routing a file through file_read/sha256(),
+;; which goes through a Rust `String` and is only safe for UTF-8 text).
+pub fn sha256_file_hex(path: string) -> string is
+    let __dstr43: (int, string) = run_capture("sha256sum " + shell_quote(path))
+    let rc: int = __dstr43.0
+    let out: string = __dstr43.1
+    if rc != 0 is return "" end
+    let parts: [string] = string_split(string_trim(out), " ")
+    if array_len(parts) == 0 is return "" end
+    return parts[0]
+end
+
+;; copy_file: binary-safe file copy via `cp` (see sha256_file_hex's note —
+;; file_read/file_write go through a Rust `String`, unsafe for non-UTF-8
+;; binary content like a compiled executable).
+pub fn copy_file(src: string, dst: string) -> bool is
+    let __dstr44: (int, string) = run_capture("cp " + shell_quote(src) + " " + shell_quote(dst))
+    let rc: int = __dstr44.0
+    let _out: string = __dstr44.1
+    return rc == 0
+end
+
+;; which: resolves a binary's absolute path via `command -v`, mirroring
+;; Go's exec.LookPath. Returns "" if not found.
+pub fn which(bin: string) -> string is
+    let __dstr45: (int, string) = run_capture("command -v " + shell_quote(bin) + " 2>/dev/null")
+    let rc: int = __dstr45.0
+    let out: string = __dstr45.1
+    if rc != 0 is return "" end
+    return string_trim(out)
+end
+
+;; du_bytes: total apparent size in bytes of everything under `path`, via
+;; `du -sb` (no native recursive-size builtin exists).
+pub fn du_bytes(path: string) -> int is
+    let __dstr46: (int, string) = run_capture("du -sb " + shell_quote(path) + " 2>/dev/null | cut -f1")
+    let rc: int = __dstr46.0
+    let out: string = __dstr46.1
+    if rc != 0 is return 0 end
+    return string_to_int(string_trim(out))
+end
+
+;; ── HTTP ─────────────────────────────────────────────────────────────────────
+;; H#'s own async runtime shells out to `curl` for http_get under the hood
+;; (see interpreter's runtime_async.rs spawn_http_get) — this is the same
+;; idiom, made synchronous and with a status code + a hard size cap, since
+;; Isolator needs to distinguish "200 with a small file" from "404"/"500"
+;; and bound the download the way the Go original's io.LimitReader did.
+;;
+;; Returns (http_status_code, body). status is -1 on a transport-level
+;; failure (DNS, timeout, connection refused, etc — never reached the
+;; server at all).
+pub fn http_get(url: string, user_agent: string) -> (int, string) is
+    let tmp: string = "/tmp/isolator_http_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".body"
+    let cmd: string =
+        "curl -s -L --max-time 30 --max-filesize 33554432 -A " + shell_quote(user_agent) +
+        " -o " + shell_quote(tmp) + " -w '%{http_code}' " + shell_quote(url)
+    let __dstr47: (int, string) = run_capture(cmd)
+    let rc: int = __dstr47.0
+    let code_str: string = __dstr47.1
+    let body: string = if file_exists(tmp) then file_read(tmp) else "" 
+    if file_exists(tmp) is file_delete(tmp) end
+    if rc != 0 is return (-1, "") end
+    let code: int = string_to_int(string_trim(code_str))
+    return (code, body)
+end
+
+;; ── Env ──────────────────────────────────────────────────────────────────────
+
+pub fn home_dir() -> string is
+    return env_get("HOME")
+end
+
+;; ── Process identity (no os.Getuid()/os.Getgid() equivalent builtin) ───────
+
+pub fn current_uid() -> int is
+    let __dstr48: (int, string) = run_capture("id -u")
+    let rc: int = __dstr48.0
+    let out: string = __dstr48.1
+    if rc != 0 is return 0 end
+    return string_to_int(string_trim(out))
+end
+
+pub fn current_gid() -> int is
+    let __dstr49: (int, string) = run_capture("id -g")
+    let rc: int = __dstr49.0
+    let out: string = __dstr49.1
+    if rc != 0 is return 0 end
+    return string_to_int(string_trim(out))
+end
+
+;; file_mtime_ms: modification time in milliseconds since epoch, via `stat`
+;; (no native builtin exposes this). Returns -1 if the path doesn't exist.
+pub fn file_mtime_ms(path: string) -> int is
+    if !path_exists(path) is return -1 end
+    let __dstr50: (int, string) = run_capture("stat -c %Y " + shell_quote(path))
+    let rc: int = __dstr50.0
+    let out: string = __dstr50.1
+    if rc != 0 is return -1 end
+    return string_to_int(string_trim(out)) * 1000
+end
+
+;; format_rfc3339 converts a Unix epoch-seconds timestamp to a UTC
+;; "YYYY-MM-DDTHH:MM:SSZ" string (civil_from_days algorithm — no timezone
+;; database needed since this is always UTC, matching time.Now().UTC()
+;; formatting semantics closely enough for a snapshot timestamp label).
+pub fn format_rfc3339(epoch_secs: int) -> string is
+    let days: int      = epoch_secs / 86400
+    let secs_of_day: int = epoch_secs - (days * 86400)
+    let hour: int = secs_of_day / 3600
+    let minute: int = (secs_of_day - hour * 3600) / 60
+    let second: int = secs_of_day - hour * 3600 - minute * 60
+
+    ;; civil_from_days (Howard Hinnant), days since 1970-01-01
+    let z: int = days + 719468
+    let era: int = (if z >= 0 then z else z - 146096) / 146097
+    let doe: int = z - era * 146097
+    let yoe: int = (doe - doe/1460 + doe/36524 - doe/146096) / 365
+    let y: int = yoe + era * 400
+    let doy: int = doe - (365*yoe + yoe/4 - yoe/100)
+    let mp: int = (5*doy + 2) / 153
+    let d: int = doy - (153*mp + 2)/5 + 1
+    let m: int = if mp < 10 then mp + 3 else mp - 9 
+    let year: int = if m <= 2 then y + 1 else y 
+
+    return to_string(year) + "-" + pad2(m) + "-" + pad2(d) + "T" + pad2(hour) + ":" + pad2(minute) + ":" + pad2(second) + "Z"
+end
+
+fn pad2(n: int) -> string is
+    if n < 10 is return "0" + to_string(n) end
+    return to_string(n)
+end
+
+;; ── Misc ─────────────────────────────────────────────────────────────────────
+
+pub fn min_of(a: int, b: int) -> int is
+    return if a < b then a else b 
+end
+
+pub fn max_of(a: int, b: int) -> int is
+    return if a > b then a else b 
+end
+
+pub fn array_contains_string(a: [string], s: string) -> bool is
+    let n: int = array_len(a)
+    let mut i: int = 0
+    while i < n is
+        if a[i] == s is return true end
+        i += 1
+    end
+    return false
+end
