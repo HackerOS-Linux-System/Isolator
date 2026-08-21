@@ -1,0 +1,40 @@
+mod util
+
+pub struct Logger is
+    pub path: string   ;; "" means stdout
+end
+
+pub fn new_logger(path: string) -> Logger is
+    if path != "" is
+        let dir: string = dir_name(path)
+        if dir != "" is util::dir_create_all(dir) end
+        if !file_exists(path) is file_write(path, "") end
+    end
+    return Logger { path: path }
+end
+
+fn dir_name(path: string) -> string is
+    let slash: int = string_rfind(path, "/")
+    if slash <= 0 is return "" end
+    return string_slice(path, 0, slash)
+end
+
+;; log_printf appends a single timestamped line, mirroring Go's
+;; log.Logger's "isolator-daemon: <date> <time> <msg>" default format
+;; closely enough for a daemon's own log — exact field layout isn't
+;; load-bearing for anything that parses it (nothing does; it's for
+;; humans/journalctl).
+pub fn log_printf(l: Logger, msg: string) is
+    let line: string = "isolator-daemon: " + util::format_rfc3339(time_ms() / 1000) + " " + msg + "\n"
+    if l.path == "" is
+        write(string_trim_end_local(line))
+    else is
+        fs_append(l.path, line)
+    end
+end
+
+fn string_trim_end_local(s: string) -> string is
+    let n: int = string_len(s)
+    if n > 0 && string_at(s, n - 1) == "\n" is return string_slice(s, 0, n - 1) end
+    return s
+end
