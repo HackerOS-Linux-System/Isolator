@@ -1,0 +1,250 @@
+use "std -> env" from "env"
+use "std -> json" from "json"
+
+extern dynamic [c] is
+    fn exit(code: int)
+end
+
+mod config
+mod log
+mod scheduler
+mod socket
+mod util
+
+let USAGE_TEXT: string =
+    "isolator-daemon — unattended scheduling for Isolator's own maintenance\n" +
+    "commands (update / autoremove / clean / snapshot). A separate tool, its\n" +
+    "own module, requires isolator on PATH — it has no container-management\n" +
+    "logic of its own, it's a clock that calls the real isolator commands.\n\n" +
+    "Usage:\n" +
+    "  isolator-daemon run [daemon.hk]        run in the foreground (systemd\n" +
+    "                                          manages backgrounding — see\n" +
+    "                                          the example unit below)\n" +
+    "  isolator-daemon status [--socket PATH]\n" +
+    "  isolator-daemon trigger [--dry-run] [--socket PATH] <task>\n" +
+    "                                          task = update | autoremove |\n" +
+    "                                          clean | snapshot | rollback\n\n" +
+    "daemon.hk (all keys optional — every one has a sane default):\n\n" +
+    "  [schedule]\n" +
+    "  -> update_interval        => 24h\n" +
+    "  -> autoremove_interval    => 168h\n" +
+    "  -> clean_interval         => 168h\n" +
+    "  -> snapshot_before_update => true\n\n" +
+    "  [socket]\n" +
+    "  -> path => /run/isolator-daemon.sock\n\n" +
+    "  [log]\n" +
+    "  -> path => /var/log/isolator-daemon.log\n\n" +
+    "Example systemd unit (pairs with Builder's generated\n" +
+    "isolator-first-boot.service — both assume Isolator itself is already set\n" +
+    "up):\n\n" +
+    "  [Unit]\n" +
+    "  Description=Isolator unattended maintenance daemon\n" +
+    "  After=network-online.target\n\n" +
+    "  [Service]\n" +
+    "  ExecStart=/usr/local/bin/isolator-daemon run /etc/isolator/daemon.hk\n" +
+    "  Restart=on-failure\n\n" +
+    "  [Install]\n" +
+    "  WantedBy=multi-user.target"
+
+fn print_usage() is
+    write(USAGE_TEXT)
+end
+
+;; check_isolator mirrors Builder's own dependency check — the daemon does
+;; nothing but schedule calls to the real `isolator` binary, so without it
+;; on PATH there's nothing for the daemon to actually do.
+fn check_isolator() -> string is
+    if util::which("isolator") == "" is
+        return "isolator not found on PATH — isolator-daemon requires an Isolator install (https://github.com/HackerOS-Linux-System/Isolator)"
+    end
+    return ""
+end
+
+fn value_after_flag(args: [string], flag: string) -> string is
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        if args[i] == flag && i + 1 < n is return args[i + 1] end
+        i += 1
+    end
+    return ""
+end
+
+fn contains_flag(args: [string], flag: string) -> bool is
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        if args[i] == flag is return true end
+        i += 1
+    end
+    return false
+end
+
+fn positional_args(args: [string]) -> [string] is
+    let mut result: [string] = []
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        let a: string = args[i]
+        if a == "--socket" is
+            i += 2
+            continue
+        end
+        if a == "--dry-run" is
+            i += 1
+            continue
+        end
+        result = array_push(result, a)
+        i += 1
+    end
+    return result
+end
+
+;; run_daemon is the single-threaded replacement for the Go original's
+;; two goroutines (ticking scheduler + socket acceptor) — see the
+;; CONCURRENCY NOTE in scheduler.h# and the IPC note in socket.h#. It
+;; polls once a second for a pending client request (fast enough to feel
+;; instant to `daemon status`/`daemon trigger --socket`), and once a
+;; minute runs the actual scheduled-task check.
+fn run_daemon(config_path: string) is
+    let iso_err: string = check_isolator()
+    if iso_err != "" is
+        write(iso_err)
+        exit(1)
+    end
+
+    let __dstr21: (string, DaemonConfig) = config::load_daemon_config(config_path)
+    let cfg_err: string = __dstr21.0
+    let cfg: DaemonConfig = __dstr21.1
+    if cfg_err != "" is
+        write(cfg_err)
+        exit(1)
+    end
+
+    let logger: Logger = log::new_logger(cfg.log_path)
+    let started_at_ms: int = time_ms()
+    let mut sched: Scheduler = scheduler::new_scheduler(cfg, logger)
+
+    socket::ensure_requests_dir(cfg.socket_path)
+    log::log_printf(logger, "daemon started — update every " + to_string(cfg.update_interval_secs) + "s, autoremove every " + to_string(cfg.autoremove_interval_secs) + "s, clean every " + to_string(cfg.clean_interval_secs) + "s")
+    log::log_printf(logger, "IPC request directory: " + cfg.socket_path + ".d (file-based — see socket.h# for why)")
+
+    ;; Run once immediately on startup so a freshly-started daemon doesn't
+    ;; wait a full interval before doing anything useful.
+    sched = scheduler::tick(sched)
+
+    let mut elapsed_secs: int = 0
+    while true is
+        sched = socket::poll_and_serve(sched, cfg.socket_path, started_at_ms)
+        util::sleep_secs(1)
+        elapsed_secs += 1
+        if elapsed_secs >= 60 is
+            sched = scheduler::tick(sched)
+            elapsed_secs = 0
+        end
+    end
+end
+
+fn run_run_cmd(args: [string]) is
+    let pos: [string] = positional_args(args)
+    let mut config_path: string = ""
+    if array_len(pos) >= 1 is config_path = pos[0] end
+    run_daemon(config_path)
+end
+
+fn run_status_cmd(args: [string]) is
+    let mut socket_path: string = config::default_daemon_config().socket_path
+    let flag_val: string = value_after_flag(args, "--socket")
+    if flag_val != "" is socket_path = flag_val end
+
+    let result: QueryResult = socket::query_daemon(socket_path, "status", "", false)
+    if !result.reached is
+        write("could not reach daemon at " + socket_path + ": " + result.error)
+        write("(is it running? try: isolator-daemon run &)")
+        exit(1)
+    end
+    if !result.ok is
+        write("daemon returned an error: " + result.error)
+        exit(1)
+    end
+
+    let obj: any = json::parse(result.body)
+    let status: any = json::get_obj(obj, "status")
+    write("uptime:              " + to_string(json::get_int(status, "uptime_secs")) + "s")
+    write("update interval:     " + to_string(json::get_int(status, "update_interval_secs")) + "s")
+    write("autoremove interval: " + to_string(json::get_int(status, "autoremove_interval_secs")) + "s")
+    write("clean interval:      " + to_string(json::get_int(status, "clean_interval_secs")) + "s")
+    write("last run:")
+    write("  (see daemon log for per-task timestamps — compact JSON summary above)")
+end
+
+fn run_trigger_cmd(args: [string]) is
+    let socket_path: string = value_after_flag(args, "--socket")
+    let dry_run: bool = contains_flag(args, "--dry-run")
+    let pos: [string] = positional_args(args)
+
+    if array_len(pos) != 1 is
+        write("usage: daemon trigger [--dry-run] [--socket PATH] <update|autoremove|clean|snapshot|rollback>")
+        exit(1)
+    end
+    let task: string = pos[0]
+
+    if socket_path != "" is
+        let result: QueryResult = socket::query_daemon(socket_path, "trigger", task, dry_run)
+        if !result.reached is
+            write("could not reach daemon at " + socket_path + ": " + result.error)
+            exit(1)
+        end
+        if !result.ok is
+            write("trigger failed: " + result.error)
+            exit(1)
+        end
+        write("triggered: " + task)
+        return
+    end
+
+    let iso_err: string = check_isolator()
+    if iso_err != "" is
+        write(iso_err)
+        exit(1)
+    end
+    let trigger_err: string = scheduler::trigger_now(task, dry_run)
+    if trigger_err != "" is
+        write(trigger_err)
+        exit(1)
+    end
+end
+
+fn main() is
+    let argv: [string] = env::args()
+    let n: int = array_len(argv)
+    let mut args: [string] = []
+    let mut i: int = 1
+    while i < n is args = array_push(args, argv[i]) i += 1 end
+
+    if array_len(args) < 1 is
+        print_usage()
+        exit(1)
+    end
+
+    let cmd: string = args[0]
+    let mut rest: [string] = []
+    let na: int = array_len(args)
+    let mut j: int = 1
+    while j < na is rest = array_push(rest, args[j]) j += 1 end
+
+    if cmd == "run" is
+        run_run_cmd(rest)
+    else if cmd == "status" is
+        run_status_cmd(rest)
+    else if cmd == "trigger" is
+        run_trigger_cmd(rest)
+    else if cmd == "-h" || cmd == "--help" || cmd == "help" is
+        print_usage()
+    else is
+        write("unknown command \"" + cmd + "\"")
+        write("")
+        print_usage()
+        exit(1)
+    end
+end
