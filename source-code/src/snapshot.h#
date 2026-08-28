@@ -1,0 +1,360 @@
+mod hkfmt
+mod helpers
+mod container
+mod exec
+mod util
+mod constants
+mod helpers_state
+mod distros
+mod types
+
+;; SnapshotRecord describes one saved container state.
+pub struct SnapshotRecord is
+    pub container:  string
+    pub image:      string
+    pub created_at: int   ;; unix epoch seconds
+end
+
+fn snapshots_file() -> string is
+    return helpers::config_path("snapshots.hk")
+end
+
+;; Stored as:
+;;
+;;   [snapshots]
+;;   -> fedora@1731000000
+;;   --> container  => fedora
+;;   --> image      => isolator-snapshot/fedora:1731000000
+;;   --> created_at => 1731000000
+fn load_snapshots() -> [SnapshotRecord] is
+    let path: string = snapshots_file()
+    if !file_exists(path) is
+        let __empty1: [SnapshotRecord] = []
+        return __empty1
+    end
+    let __dstr71: (string, HkDocument) = hkfmt::load_hk_file(path)
+    let err: string = __dstr71.0
+    let doc: HkDocument = __dstr71.1
+    if err != "" is
+        let __empty2: [SnapshotRecord] = []
+        return __empty2
+    end
+    let sec: HkMap = hkfmt::hkdoc_section(doc, "snapshots")
+    let keys: [string] = hkfmt::hkmap_keys(sec)
+    let mut recs: [SnapshotRecord] = []
+    let n: int = array_len(keys)
+    let mut i: int = 0
+    while i < n is
+        let key: string = keys[i]
+        let v: HkValue = hkfmt::hkmap_get(sec, key)
+        if v.kind == "map" is
+            let m: HkMap = v.map_val
+            let mut created_at: int = 0
+            if hkfmt::hkmap_has(m, "created_at") is
+                let cv: HkValue = hkfmt::hkmap_get(m, "created_at")
+                if cv.kind == "number" is created_at = util::float_to_int(cv.num_val) end
+            end
+            recs = array_push(recs, SnapshotRecord {
+                container: hkfmt::hk_get_string(m, "container", ""),
+                image: hkfmt::hk_get_string(m, "image", ""),
+                created_at: created_at,
+            })
+        end
+        i += 1
+    end
+    return recs
+end
+
+fn save_snapshots(recs: [SnapshotRecord]) -> bool is
+    let mut doc: HkDocument = hkfmt::new_hkdocument()
+    let mut sec: HkMap = hkfmt::new_hkmap()
+    let n: int = array_len(recs)
+    let mut i: int = 0
+    while i < n is
+        let r: SnapshotRecord = recs[i]
+        let mut m: HkMap = hkfmt::new_hkmap()
+        m = hkfmt::hkmap_set(m, "container", hkfmt::hk_str(r.container))
+        m = hkfmt::hkmap_set(m, "image", hkfmt::hk_str(r.image))
+        m = hkfmt::hkmap_set(m, "created_at", hkfmt::hk_num(util::int_to_float(r.created_at)))
+        let key: string = r.container + "@" + to_string(r.created_at)
+        sec = hkfmt::hkmap_set(sec, key, hkfmt::hk_map_v(m))
+        i += 1
+    end
+    doc = hkfmt::hkdoc_set_section(doc, "snapshots", sec)
+    hkfmt::write_hk_file(snapshots_file(), doc)
+    return true
+end
+
+;; latest_snapshot_for returns (found, SnapshotRecord) — the most recent
+;; snapshot recorded for `cont`.
+fn latest_snapshot_for(cont: string, recs: [SnapshotRecord]) -> (bool, SnapshotRecord) is
+    let mut found: bool = false
+    let mut latest: SnapshotRecord = SnapshotRecord { container: "", image: "", created_at: 0 }
+    let n: int = array_len(recs)
+    let mut i: int = 0
+    while i < n is
+        let r: SnapshotRecord = recs[i]
+        if r.container == cont is
+            if !found || r.created_at > latest.created_at is
+                latest = r
+                found = true
+            end
+        end
+        i += 1
+    end
+    return (found, latest)
+end
+
+;; handle_snapshot commits the current state of a managed container to a
+;; local tagged image, so a failed upgrade/update can be undone.
+pub fn handle_snapshot(cont: string, dry_run: bool) is
+    if !container::container_exists(cont) is
+        helpers::print_error("Container '" + cont + "' not found")
+        return
+    end
+    if dry_run is
+        let tag: string = "isolator-snapshot/" + cont + ":<timestamp>"
+        helpers::print_info("[dry-run] Would commit '" + cont + "' to image '" + tag + "' and record it")
+        return
+    end
+    let __dstr72: (string, string) = snapshot_one(cont)
+    let _tag: string = __dstr72.0
+    let err: string = __dstr72.1
+    if err != "" is helpers::print_error(err) end
+end
+
+;; snapshot_one does the actual commit + bookkeeping for a single
+;; container, shared by handle_snapshot and handle_snapshot_all. Returns
+;; (tag, "") on success, or ("", error).
+fn snapshot_one(cont: string) -> (string, string) is
+    let now: int = time_ms() / 1000
+    let tag: string = "isolator-snapshot/" + cont + ":" + to_string(now)
+    helpers::print_step("Committing snapshot of " + cont + "...")
+    if !exec::exec_command(constants::PODMAN_BIN, ["commit", cont, tag]) is
+        return ("", "snapshot of '" + cont + "' failed")
+    end
+    let mut recs: [SnapshotRecord] = load_snapshots()
+    recs = array_push(recs, SnapshotRecord { container: cont, image: tag, created_at: now })
+    if !save_snapshots(recs) is
+        return ("", "snapshot of '" + cont + "' created but failed to record metadata")
+    end
+    helpers::print_success("Snapshot saved: " + tag)
+    return (tag, "")
+end
+
+;; handle_snapshot_all snapshots every container Isolator manages in one
+;; go — the natural "before I upgrade/rollback everything" preparation
+;; step for a real system-wide rollback later.
+pub fn handle_snapshot_all(dry_run: bool) is
+    let conts: [string] = container::get_our_containers()
+    if array_len(conts) == 0 is
+        helpers::print_info("No managed containers to snapshot")
+        return
+    end
+    if dry_run is
+        helpers::print_info("[dry-run] Would snapshot " + to_string(array_len(conts)) + " container(s):")
+        let n: int = array_len(conts)
+        let mut i: int = 0
+        while i < n is write("  " + conts[i]) i += 1 end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+    helpers::print_info("Snapshotting " + to_string(array_len(conts)) + " managed container(s)...")
+    let mut failed: int = 0
+    let n: int = array_len(conts)
+    let mut i: int = 0
+    while i < n is
+        let __dstr73: (string, string) = snapshot_one(conts[i])
+        let _tag: string = __dstr73.0
+        let err: string = __dstr73.1
+        if err != "" is
+            helpers::print_error(err)
+            failed += 1
+        end
+        i += 1
+    end
+    if failed == 0 is
+        helpers::print_success("All " + to_string(array_len(conts)) + " container(s) snapshotted")
+    else is
+        helpers::print_warn(to_string(failed) + "/" + to_string(array_len(conts)) + " container(s) failed to snapshot")
+    end
+end
+
+;; handle_rollback restores the most recent snapshot for cont: stops and
+;; removes the running container, then re-creates it from the snapshot
+;; image, preserving the original home-directory mount.
+pub fn handle_rollback(cont: string, dry_run: bool) is
+    let recs: [SnapshotRecord] = load_snapshots()
+    let __dstr74: (bool, SnapshotRecord) = latest_snapshot_for(cont, recs)
+    let found: bool = __dstr74.0
+    let latest: SnapshotRecord = __dstr74.1
+    if !found is
+        helpers::print_error("No snapshot found for '" + cont + "' — run 'isolator snapshot " + cont + "' first, next time")
+        return
+    end
+    if dry_run is
+        helpers::print_info("[dry-run] Would roll back '" + cont + "' to snapshot from " + util::format_rfc3339(latest.created_at) + " (image: " + latest.image + ")")
+        write("  - stop + remove current container: " + cont)
+        write("  - recreate from: " + latest.image)
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+    let err: string = rollback_one(cont, latest)
+    if err != "" is helpers::print_error(err) end
+end
+
+;; rollback_one does the actual stop/remove/recreate for a single
+;; container, shared by handle_rollback and handle_rollback_all. Returns ""
+;; on success, or an error message.
+fn rollback_one(cont: string, latest: SnapshotRecord) -> string is
+    helpers::print_info("Rolling back '" + cont + "' to snapshot from " + util::format_rfc3339(latest.created_at))
+
+    let mut home_dir: string = env_get("HOME")
+    let mut pkg_type: string = "gui"
+    let mut init_system: string = ""
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        let ip: InstalledPackage = installed[i]
+        if ip.cont == cont is
+            pkg_type = ip.kind
+            let __dstr75: (bool, Distro) = distros::lookup_distro(ip.distro)
+            let dok: bool = __dstr75.0
+            let d: Distro = __dstr75.1
+            if dok is init_system = d.init_system end
+            if ip.isolated is
+                home_dir = util::path_join(util::path_join(env_get("HOME"), constants::HOMES_DIR), ip.pkg)
+            end
+            i = n
+        end
+        i += 1
+    end
+
+    exec::exec_command(constants::PODMAN_BIN, ["stop", cont])
+    exec::exec_command(constants::PODMAN_BIN, ["rm", "--force", cont])
+
+    let args: [string] = container::get_podman_run_args(cont, latest.image, home_dir, pkg_type, init_system)
+    if !exec::exec_command(constants::PODMAN_BIN, args) is
+        return "rollback of '" + cont + "' failed to recreate the container"
+    end
+    helpers::print_success("Rollback complete: " + cont + " restored from " + latest.image)
+    return ""
+end
+
+struct RollbackPlan is
+    pub cont:   string
+    pub latest: SnapshotRecord
+end
+
+;; handle_rollback_all is the real system-wide rollback: every managed
+;; container that has at least one recorded snapshot gets restored to its
+;; own latest snapshot. Containers with no snapshot are reported and
+;; skipped rather than silently ignored, so a partial rollback is never
+;; mistaken for a complete one.
+pub fn handle_rollback_all(dry_run: bool) is
+    let conts: [string] = container::get_our_containers()
+    if array_len(conts) == 0 is
+        helpers::print_info("No managed containers found")
+        return
+    end
+    let recs: [SnapshotRecord] = load_snapshots()
+
+    let mut plans: [RollbackPlan] = []
+    let mut no_snapshot: [string] = []
+    let n: int = array_len(conts)
+    let mut i: int = 0
+    while i < n is
+        let c: string = conts[i]
+        let __dstr76: (bool, SnapshotRecord) = latest_snapshot_for(c, recs)
+        let found: bool = __dstr76.0
+        let latest: SnapshotRecord = __dstr76.1
+        if !found is
+            no_snapshot = array_push(no_snapshot, c)
+        else is
+            plans = array_push(plans, RollbackPlan { cont: c, latest: latest })
+        end
+        i += 1
+    end
+
+    if array_len(plans) == 0 is
+        helpers::print_warn("No managed container has a snapshot to roll back to — run 'isolator snapshot-all' first, next time")
+        return
+    end
+
+    if dry_run is
+        helpers::print_info("[dry-run] Would roll back " + to_string(array_len(plans)) + "/" + to_string(array_len(conts)) + " managed container(s):")
+        let np: int = array_len(plans)
+        let mut pi: int = 0
+        while pi < np is
+            let p: RollbackPlan = plans[pi]
+            write("  " + p.cont + "  ← " + p.latest.image + " (" + util::format_rfc3339(p.latest.created_at) + ")")
+            pi += 1
+        end
+        if array_len(no_snapshot) > 0 is
+            helpers::print_warn("No snapshot for (would be left untouched): [" + util::string_join(no_snapshot, ", ") + "]")
+        end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Rolling back " + to_string(array_len(plans)) + "/" + to_string(array_len(conts)) + " managed container(s) to their latest snapshot...")
+    let mut failed: int = 0
+    let np2: int = array_len(plans)
+    let mut pj: int = 0
+    while pj < np2 is
+        let p: RollbackPlan = plans[pj]
+        let err: string = rollback_one(p.cont, p.latest)
+        if err != "" is
+            helpers::print_error(err)
+            failed += 1
+        end
+        pj += 1
+    end
+    if array_len(no_snapshot) > 0 is
+        helpers::print_warn("Left untouched (no snapshot exists): [" + util::string_join(no_snapshot, ", ") + "]")
+    end
+    if failed == 0 is
+        helpers::print_success("System-wide rollback complete: " + to_string(array_len(plans)) + " container(s) restored")
+    else is
+        helpers::print_warn(to_string(failed) + "/" + to_string(array_len(plans)) + " container(s) failed to roll back")
+    end
+end
+
+;; handle_snapshot_list shows saved snapshots, most recent first.
+pub fn handle_snapshot_list() is
+    let recs: [SnapshotRecord] = load_snapshots()
+    if array_len(recs) == 0 is
+        helpers::print_info("No snapshots saved yet")
+        return
+    end
+    let sorted: [SnapshotRecord] = sort_by_created_desc(recs)
+    let n: int = array_len(sorted)
+    let mut i: int = 0
+    while i < n is
+        let r: SnapshotRecord = sorted[i]
+        write("  " + cyan(r.container) + "  " + r.image + "  " + dim(util::format_rfc3339(r.created_at)))
+        i += 1
+    end
+end
+
+fn sort_by_created_desc(recs: [SnapshotRecord]) -> [SnapshotRecord] is
+    let mut arr: [SnapshotRecord] = recs
+    let n: int = array_len(arr)
+    let mut i: int = 0
+    while i < n is
+        let mut max_idx: int = i
+        let mut j: int = i + 1
+        while j < n is
+            if arr[j].created_at > arr[max_idx].created_at is max_idx = j end
+            j += 1
+        end
+        if max_idx != i is
+            let tmp: SnapshotRecord = arr[i]
+            arr[i] = arr[max_idx]
+            arr[max_idx] = tmp
+        end
+        i += 1
+    end
+    return arr
+end
