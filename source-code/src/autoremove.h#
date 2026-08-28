@@ -1,0 +1,73 @@
+mod helpers_state
+mod container
+mod exec
+mod helpers
+mod constants
+mod types
+
+pub fn handle_autoremove(dry_run: bool) is
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+
+    let mut in_use: [string] = []
+    let ni: int = array_len(installed)
+    let mut i: int = 0
+    while i < ni is
+        if !array_contains(in_use, installed[i].cont) is
+            in_use = array_push(in_use, installed[i].cont)
+        end
+        i += 1
+    end
+
+    let ours: [string] = container::get_our_containers()
+    let mut orphans: [string] = []
+    let no: int = array_len(ours)
+    let mut j: int = 0
+    while j < no is
+        if !array_contains(in_use, ours[j]) is
+            orphans = array_push(orphans, ours[j])
+        end
+        j += 1
+    end
+
+    if array_len(orphans) == 0 is
+        helpers::print_info("No orphaned containers to remove")
+        return
+    end
+
+    if dry_run is
+        helpers::print_info("[dry-run] Would remove " + to_string(array_len(orphans)) + " orphaned container(s):")
+        let no2: int = array_len(orphans)
+        let mut k: int = 0
+        while k < no2 is write("  " + orphans[k]) k += 1 end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Found " + to_string(array_len(orphans)) + " orphaned container(s):")
+    let no3: int = array_len(orphans)
+    let mut m: int = 0
+    while m < no3 is write("  " + dim(orphans[m])) m += 1 end
+
+    let no4: int = array_len(orphans)
+    let mut p: int = 0
+    while p < no4 is
+        let o: string = orphans[p]
+        helpers::print_step("Removing " + o + "...")
+        if exec::exec_command(constants::PODMAN_BIN, ["rm", "--force", o]) is
+            helpers::print_success("Removed " + o)
+        else is
+            helpers::print_error("Failed to remove " + o)
+        end
+        p += 1
+    end
+end
+
+fn array_contains(a: [string], s: string) -> bool is
+    let n: int = array_len(a)
+    let mut i: int = 0
+    while i < n is
+        if a[i] == s is return true end
+        i += 1
+    end
+    return false
+end
