@@ -1,0 +1,86 @@
+mod container
+mod distros
+mod exec
+mod helpers
+mod util
+mod types
+
+;; distro_name_for_container maps a running container's name back to the
+;; catalog distro key that produced it (handles both shared containers,
+;; e.g. "debian-testing", and isolated ones, e.g. "debian-testing-firefox").
+fn distro_name_for_container(cont: string) -> string is
+    let keys: [string] = distros::all_distro_keys()
+    let n: int = array_len(keys)
+    let mut i: int = 0
+    while i < n is
+        let key: string = keys[i]
+        let __dstr70: (bool, Distro) = distros::lookup_distro(key)
+        let ok: bool = __dstr70.0
+        let d: Distro = __dstr70.1
+        if ok && (cont == d.cont_name || string_starts_with(cont, d.cont_name + "-")) is
+            return key
+        end
+        i += 1
+    end
+    return ""
+end
+
+struct UpdateResult is
+    pub cont: string
+    pub ok:   bool
+end
+
+pub fn handle_update(dry_run: bool) is
+    let conts: [string] = container::get_our_containers()
+    if array_len(conts) == 0 is
+        helpers::print_warn("No managed containers found")
+        return
+    end
+
+    if dry_run is
+        helpers::print_info("[dry-run] Would update " + to_string(array_len(conts)) + " managed container(s):")
+        let n: int = array_len(conts)
+        let mut i: int = 0
+        while i < n is
+            let cont: string = conts[i]
+            let distro_name: string = distro_name_for_container(cont)
+            if distro_name == "" is
+                write("  " + cont + "  " + dim("(unknown distro — would be skipped)"))
+            else is
+                write("  " + cont + "  " + dim(distros::adapter_update(distro_name)))
+            end
+            i += 1
+        end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Updating all managed containers...")
+    let mut results: [UpdateResult] = []
+    let n: int = array_len(conts)
+    let mut i: int = 0
+    while i < n is
+        let cont: string = conts[i]
+        let distro_name: string = distro_name_for_container(cont)
+        if distro_name != "" is
+            let mut ok: bool = false
+            if container::ensure_container_running(cont) is
+                ok = exec::exec_in_container(cont, distros::adapter_update(distro_name), false, true)
+            end
+            results = array_push(results, UpdateResult { cont: cont, ok: ok })
+        end
+        i += 1
+    end
+
+    let nr: int = array_len(results)
+    let mut j: int = 0
+    while j < nr is
+        let r: UpdateResult = results[j]
+        if r.ok is
+            helpers::print_success("Updated: " + r.cont)
+        else is
+            helpers::print_error("Update failed: " + r.cont)
+        end
+        j += 1
+    end
+end
