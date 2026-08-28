@@ -1,0 +1,37 @@
+mod util
+mod exec
+mod update
+mod helpers
+
+pub fn handle_upgrade(dry_run: bool) is
+    if dry_run is
+        helpers::print_info("[dry-run] Would run full system upgrade:")
+        if util::path_exists("/usr/bin/apt") is
+            helpers::print_warn("[dry-run] System apt found in /usr/bin/ — the real run would abort here (potential conflict)")
+            return
+        end
+        if !util::path_exists("/usr/lib/isolator/apt") is
+            helpers::print_warn("[dry-run] Isolator apt not found at /usr/lib/isolator/apt — the real run would abort here")
+            return
+        end
+        write("  - sudo /usr/lib/isolator/apt update")
+        write("  - sudo /usr/lib/isolator/apt upgrade -y")
+        update::handle_update(true)
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Running full system upgrade...")
+    if util::path_exists("/usr/bin/apt") is
+        helpers::print_error("System apt found in /usr/bin/ — potential conflict")
+        return
+    end
+    if !util::path_exists("/usr/lib/isolator/apt") is
+        helpers::print_error("Isolator apt not found at /usr/lib/isolator/apt")
+        return
+    end
+    exec::exec_command("sudo", ["/usr/lib/isolator/apt", "update"])
+    exec::exec_command("sudo", ["/usr/lib/isolator/apt", "upgrade", "-y"])
+    update::handle_update(false)
+    helpers::print_success("Upgrade complete")
+end
