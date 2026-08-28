@@ -297,13 +297,25 @@ pub fn http_get(url: string, user_agent: string) -> (int, string) is
     let tmp: string = "/tmp/isolator_http_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".body"
     let cmd: string =
         "curl -s -L --max-time 30 --max-filesize 33554432 -A " + shell_quote(user_agent) +
-        " -o " + shell_quote(tmp) + " -w '%{http_code}' " + shell_quote(url)
+        " -o " + shell_quote(tmp) + " -w '%{{http_code}}' " + shell_quote(url)
     let __dstr17: (int, string) = run_capture(cmd)
     let rc: int = __dstr17.0
     let code_str: string = __dstr17.1
     let body: string = if file_exists(tmp) then file_read(tmp) else "" 
     if file_exists(tmp) is file_delete(tmp) end
-    if rc != 0 is return (-1, "") end
+    if rc != 0 is
+        ;; DEBUG: every possible transport failure (real DNS/connect
+        ;; problem, curl missing from PATH, a shell-quoting mistake, ...)
+        ;; used to collapse into one opaque "transport error" with no way
+        ;; to tell which. Surface the raw system() status and whatever
+        ;; curl actually wrote (its `-w` output and/or its stderr, both
+        ;; captured together by run_capture) so a real failure is
+        ;; diagnosable from one run instead of guessed at over several.
+        write("  \x1b[2m[debug] http_get: system() exit status " + to_string(rc) + "\x1b[0m")
+        write("  \x1b[2m[debug] command: " + cmd + "\x1b[0m")
+        write("  \x1b[2m[debug] curl said: " + string_trim(code_str) + "\x1b[0m")
+        return (-1, "")
+    end
     let code: int = string_to_int(string_trim(code_str))
     return (code, body)
 end
@@ -392,4 +404,21 @@ pub fn array_contains_string(a: [string], s: string) -> bool is
         i += 1
     end
     return false
+end
+
+;; which: resolves a binary's absolute path via `command -v`, mirroring
+;; Go's exec.LookPath. Returns "" if not found.
+;;
+;; FIX: this daemon-side copy of util.h# was missing `which` entirely
+;; (present in builder/src/util.h#, absent here) — that's what produced
+;; "undefined fn: which (daemon/src/main.h#:74:8)" from check_isolator's
+;; PATH check. Ported over verbatim from builder/src/util.h#, which
+;; already depends on nothing but shell_quote/run_capture (both already
+;; present in this file).
+pub fn which(bin: string) -> string is
+    let result: (int, string) = run_capture("command -v " + shell_quote(bin) + " 2>/dev/null")
+    let rc: int = result.0
+    let out: string = result.1
+    if rc != 0 is return "" end
+    return string_trim(out)
 end
