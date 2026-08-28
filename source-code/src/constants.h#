@@ -1,0 +1,9 @@
+pub let VERSION:        string = "0.7"
+pub let REPO_URL:       string = "https://raw.githubusercontent.com/HackerOS-Linux-System/Isolator/main/repo/package-list.json"
+pub let PODMAN_BIN:     string = "podman"
+pub let CONFIG_DIR:     string = ".config/isolator"
+pub let INSTALLED_FILE: string = "installed.hk"
+pub let REPO_FILE:      string = "package-list.json"
+pub let HOMES_DIR:      string = ".isolator/homes"
+;; cacheMaxAge = 24 * time.Hour, expressed in milliseconds for use with time_ms()
+pub let CACHE_MAX_AGE_MS: int = 24 * 60 * 60 * 1000
