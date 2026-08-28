@@ -1,0 +1,533 @@
+mod helpers
+mod util
+mod constants
+mod exec
+mod config
+
+;; ---------------------------------------------------------------------------
+;; GPU detection
+;; ---------------------------------------------------------------------------
+;; GPU vendor strings: "none" | "intel" | "amd" | "nvidia" | "hybrid"
+;; ("hybrid" = e.g. Intel iGPU + Nvidia dGPU / Optimus)
+
+;; detect_gpu inspects /sys/class/drm to figure out which vendor driver(s)
+;; are bound on the host, without shelling out to lspci (which may not be
+;; installed). It is intentionally conservative: if nothing is found it
+;; returns "none" rather than guessing.
+pub fn detect_gpu() -> string is
+    let mut has_intel:  bool = false
+    let mut has_amd:    bool = false
+    let mut has_nvidia: bool = false
+
+    let entries: [string] = util::list_dir_names("/sys/class/drm")
+    let n: int = array_len(entries)
+    let mut i: int = 0
+    while i < n is
+        let name: string = entries[i]
+        if string_starts_with(name, "card") && !string_contains(name, "-") is
+            let vendor_path: string = "/sys/class/drm/" + name + "/device/vendor"
+            if file_exists(vendor_path) is
+                let data: string = string_trim(file_read(vendor_path))
+                if data == "0x8086" is has_intel = true end
+                if data == "0x1002" is has_amd = true end
+                if data == "0x10de" is has_nvidia = true end
+            end
+        end
+        i += 1
+    end
+
+    if !has_nvidia is
+        if util::path_exists("/dev/nvidiactl") is has_nvidia = true end
+        if util::path_exists("/proc/driver/nvidia/version") is has_nvidia = true end
+    end
+
+    if has_nvidia && (has_intel || has_amd) is return "hybrid" end
+    if has_nvidia is return "nvidia" end
+    if has_amd    is return "amd" end
+    if has_intel  is return "intel" end
+    return "none"
+end
+
+;; nvidia_cdi_available reports whether the NVIDIA Container Toolkit has
+;; generated a CDI spec, which lets Podman attach the GPU with a single
+;; `--device nvidia.com/gpu=all` instead of us hand-mounting device nodes
+;; and driver libraries (fragile and easy to get wrong across driver
+;; versions).
+fn nvidia_cdi_available() -> bool is
+    let candidates: [string] = [
+        "/etc/cdi/nvidia.yaml", "/etc/cdi/nvidia.json",
+        "/var/run/cdi/nvidia.yaml", "/var/run/cdi/nvidia.json",
+    ]
+    let n: int = array_len(candidates)
+    let mut i: int = 0
+    while i < n is
+        if util::path_exists(candidates[i]) is return true end
+        i += 1
+    end
+    return false
+end
+
+;; ---------------------------------------------------------------------------
+;; Audio backend detection
+;; ---------------------------------------------------------------------------
+;; "none" | "pipewire" | "pulseaudio" | "alsa"
+
+pub fn detect_audio(uid: int) -> string is
+    let runtime_dir: string = "/run/user/" + to_string(uid)
+    if util::path_exists(util::path_join(runtime_dir, "pipewire-0")) is return "pipewire" end
+    if util::path_exists(util::path_join(runtime_dir, "pulse/native")) is return "pulseaudio" end
+    if util::path_exists("/dev/snd") is return "alsa" end
+    return "none"
+end
+
+;; ---------------------------------------------------------------------------
+;; X11 scoped authentication
+;; ---------------------------------------------------------------------------
+
+;; generate_scoped_xauth extracts the MIT-MAGIC-COOKIE for the current
+;; $DISPLAY into a container-specific Xauthority file instead of relying on
+;; blanket `xhost +`. The cookie file is only readable by the current user
+;; and is mounted read-only into the container, so a compromised container
+;; gains access to exactly one display session and nothing else on the host.
+;; Falls back to "" (caller then skips XAUTHORITY entirely) if `xauth` is
+;; not installed or extraction fails — the raw socket mount still works for
+;; hosts that run with a permissive `xhost` policy.
+fn generate_scoped_xauth(cont_name: string, display: string) -> string is
+    if display == "" is return "" end
+    let __dstr85: (int, string) = util::run_capture("command -v xauth >/dev/null 2>&1")
+    let which_rc: int = __dstr85.0
+    let _out: string = __dstr85.1
+    if which_rc != 0 is return "" end
+
+    let dir: string = util::path_join(util::path_join(util::home_dir(), constants::CONFIG_DIR), "xauth")
+    if !util::dir_create_all(dir) is return "" end
+    let dest: string = util::path_join(dir, cont_name + ".Xauthority")
+
+    let __dstr86: (int, string) = util::run_argv("xauth", ["nlist", display])
+    let list_rc: int = __dstr86.0
+    let list_out: string = __dstr86.1
+    if list_rc != 0 || string_trim(list_out) == "" is return "" end
+
+    let merge_cmd: string = "echo " + util::shell_quote(list_out) + " | xauth -f " + util::shell_quote(dest) + " nmerge -"
+    let __dstr87: (int, string) = util::run_capture(merge_cmd)
+    let merge_rc: int = __dstr87.0
+    let _merge_out: string = __dstr87.1
+    if merge_rc != 0 is return "" end
+    let _ignore = util::run_capture("chmod 600 " + util::shell_quote(dest))
+    return dest
+end
+
+;; ---------------------------------------------------------------------------
+;; Building the full set of podman-run arguments for graphical support
+;; ---------------------------------------------------------------------------
+
+;; graphics_context bundles everything build_graphics_args needs so it
+;; stays a pure, testable function instead of reaching into globals.
+pub struct GraphicsContext is
+    pub uid:         int
+    pub gid:         int
+    pub cont_name:   string
+    pub cfg:         Config
+    pub pkg_type:    string  ;; "cli" | "gui" | "de" | "lib" | "system"
+    pub init_system: string  ;; "systemd" | "sysvinit" | "none" — see Distro.init_system
+end
+
+;; build_graphics_args returns the extra `podman run` arguments needed to
+;; give a container working, reasonably-secured access to the host's
+;; display, audio, GPU, fonts/themes and clock — i.e. everything a modern
+;; GUI app (Electron, GTK, Qt, SDL, Vulkan/OpenGL) expects to find.
+pub fn build_graphics_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+
+    if ctx.pkg_type == "cli" || ctx.pkg_type == "lib" is
+        return args
+    end
+
+    ;; "system" packages (systemd-managed background services/daemons) get
+    ;; systemd + cgroup access — the same mechanism "de" uses — but none of
+    ;; the display/audio/GPU/theme mounts, since they're headless by design.
+    if ctx.pkg_type == "system" is
+        return build_systemd_args(ctx, ctx.cfg.allow_system_containers, "system")
+    end
+
+    if !ctx.cfg.enable_gui is return args end
+
+    args = array_concat(args, build_display_args(ctx))
+    args = array_concat(args, build_audio_args(ctx))
+    args = array_concat(args, build_gpu_args(ctx))
+    args = array_concat(args, build_dbus_args(ctx))
+    args = array_concat(args, build_fonts_and_theme_args(ctx))
+    args = array_concat(args, build_misc_desktop_args(ctx))
+
+    if ctx.pkg_type == "de" is
+        args = array_concat(args, build_systemd_args(ctx, ctx.cfg.allow_desktop_environments, "de"))
+    end
+
+    return args
+end
+
+fn build_display_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+
+    if util::path_exists("/tmp/.X11-unix") is
+        args = array_push(args, "--volume")
+        args = array_push(args, "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+        let display: string = env_get("DISPLAY")
+        if display != "" is
+            args = array_push(args, "--env")
+            args = array_push(args, "DISPLAY=" + display)
+            let xauth: string = generate_scoped_xauth(ctx.cont_name, display)
+            if xauth != "" is
+                args = array_push(args, "--volume")
+                args = array_push(args, xauth + ":/home/user/.Xauthority:ro")
+                args = array_push(args, "--env")
+                args = array_push(args, "XAUTHORITY=/home/user/.Xauthority")
+            end
+        end
+    end
+
+    let mut wayland_display: string = env_get("WAYLAND_DISPLAY")
+    if wayland_display == "" is wayland_display = "wayland-0" end
+    let runtime_dir: string = "/run/user/" + to_string(ctx.uid)
+    let wayland_sock: string = util::path_join(runtime_dir, wayland_display)
+    if util::path_exists(wayland_sock) is
+        args = array_push(args, "--volume")
+        args = array_push(args, wayland_sock + ":/run/user/" + to_string(ctx.uid) + "/" + wayland_display + ":rw")
+        args = array_push(args, "--env")
+        args = array_push(args, "WAYLAND_DISPLAY=" + wayland_display)
+        args = array_push(args, "--env")
+        args = array_push(args, "XDG_RUNTIME_DIR=/run/user/" + to_string(ctx.uid))
+    end
+
+    return args
+end
+
+fn build_audio_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+    let mut backend: string = ctx.cfg.audio_backend
+    if backend == "" || backend == "auto" is backend = detect_audio(ctx.uid) end
+    let runtime_dir: string = "/run/user/" + to_string(ctx.uid)
+
+    if backend == "pipewire" is
+        let sock: string = util::path_join(runtime_dir, "pipewire-0")
+        if util::path_exists(sock) is
+            args = array_push(args, "--volume")
+            args = array_push(args, sock + ":/run/user/" + to_string(ctx.uid) + "/pipewire-0:rw")
+        end
+    else if backend == "pulseaudio" is
+        let sock: string = util::path_join(runtime_dir, "pulse")
+        if util::path_exists(sock) is
+            args = array_push(args, "--volume")
+            args = array_push(args, sock + ":/run/user/" + to_string(ctx.uid) + "/pulse:rw")
+        end
+    else if backend == "alsa" is
+        if util::path_exists("/dev/snd") is
+            args = array_push(args, "--device")
+            args = array_push(args, "/dev/snd:/dev/snd")
+            args = array_push(args, "--group-add")
+            args = array_push(args, "keep-groups")
+        end
+    end
+    return args
+end
+
+fn build_gpu_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+
+    let mut vendor: string = ctx.cfg.gpu_mode
+    if vendor == "" || vendor == "auto" is vendor = detect_gpu() end
+    if vendor == "none" is return args end
+
+    if util::path_exists("/dev/dri") is
+        args = array_push(args, "--device")
+        args = array_push(args, "/dev/dri:/dev/dri")
+        args = array_push(args, "--group-add")
+        args = array_push(args, "keep-groups")
+    end
+
+    if vendor == "nvidia" || vendor == "hybrid" is
+        if nvidia_cdi_available() is
+            args = array_push(args, "--device")
+            args = array_push(args, "nvidia.com/gpu=all")
+        else is
+            let devs: [string] = ["/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset"]
+            let nd: int = array_len(devs)
+            let mut i: int = 0
+            while i < nd is
+                let dev: string = devs[i]
+                if util::path_exists(dev) is
+                    args = array_push(args, "--device")
+                    args = array_push(args, dev + ":" + dev)
+                end
+                i += 1
+            end
+            args = array_push(args, "--env")
+            args = array_push(args, "NVIDIA_VISIBLE_DEVICES=all")
+            args = array_push(args, "--env")
+            args = array_push(args, "NVIDIA_DRIVER_CAPABILITIES=all")
+        end
+    end
+
+    return args
+end
+
+fn build_dbus_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+    let runtime_dir: string = "/run/user/" + to_string(ctx.uid)
+    let session_bus: string = util::path_join(runtime_dir, "bus")
+    if util::path_exists(session_bus) is
+        args = array_push(args, "--volume")
+        args = array_push(args, session_bus + ":/run/user/" + to_string(ctx.uid) + "/bus:rw")
+        args = array_push(args, "--env")
+        args = array_push(args, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/" + to_string(ctx.uid) + "/bus")
+    end
+    if util::path_exists("/run/dbus/system_bus_socket") is
+        args = array_push(args, "--volume")
+        args = array_push(args, "/run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro")
+    end
+    return args
+end
+
+fn build_fonts_and_theme_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+    let home: string = util::home_dir()
+
+    if util::path_exists("/usr/share/fonts") is
+        args = array_push(args, "--volume")
+        args = array_push(args, "/usr/share/fonts:/usr/share/fonts:ro")
+    end
+    let user_fonts: string = util::path_join(home, ".fonts")
+    if util::path_exists(user_fonts) is
+        args = array_push(args, "--volume")
+        args = array_push(args, user_fonts + ":/home/user/.fonts:ro")
+    end
+    let user_fonts_xdg: string = util::path_join(home, ".local/share/fonts")
+    if util::path_exists(user_fonts_xdg) is
+        args = array_push(args, "--volume")
+        args = array_push(args, user_fonts_xdg + ":/home/user/.local/share/fonts:ro")
+    end
+
+    let mut gtk_theme: string = ctx.cfg.gtk_theme
+    if gtk_theme == "" is gtk_theme = env_get("GTK_THEME") end
+    if gtk_theme != "" is
+        args = array_push(args, "--env")
+        args = array_push(args, "GTK_THEME=" + gtk_theme)
+    end
+    let icon_theme: string = ctx.cfg.icon_theme
+    if icon_theme != "" is
+        args = array_push(args, "--env")
+        args = array_push(args, "GTK_ICON_THEME=" + icon_theme)
+    end
+    if ctx.cfg.qt_platform != "" is
+        args = array_push(args, "--env")
+        args = array_push(args, "QT_QPA_PLATFORMTHEME=" + ctx.cfg.qt_platform)
+    end
+
+    let dconf_dir: string = util::path_join(home, ".config/dconf")
+    if util::dir_create_all(dconf_dir) is
+        args = array_push(args, "--volume")
+        args = array_push(args, dconf_dir + ":/home/user/.config/dconf:rw")
+    end
+
+    return args
+end
+
+fn build_misc_desktop_args(ctx: GraphicsContext) -> [string] is
+    let mut args: [string] = []
+
+    if util::path_exists("/etc/localtime") is
+        args = array_push(args, "--volume")
+        args = array_push(args, "/etc/localtime:/etc/localtime:ro")
+    end
+    let tz: string = env_get("TZ")
+    if tz != "" is
+        args = array_push(args, "--env")
+        args = array_push(args, "TZ=" + tz)
+    end
+    let env_vars: [string] = ["LANG", "LC_ALL", "LANGUAGE"]
+    let nv: int = array_len(env_vars)
+    let mut i: int = 0
+    while i < nv is
+        let v: string = env_get(env_vars[i])
+        if v != "" is
+            args = array_push(args, "--env")
+            args = array_push(args, env_vars[i] + "=" + v)
+        end
+        i += 1
+    end
+
+    let mut shm: string = ctx.cfg.shm_size
+    if shm == "" is shm = "1g" end
+    args = array_push(args, "--shm-size")
+    args = array_push(args, shm)
+
+    return args
+end
+
+;; build_systemd_args adds the privilege set required to run a full init
+;; system (systemd as PID 1) inside a container: real cgroup access and
+;; `--systemd=always`. This is opt-in per package type ("de" or "system")
+;; via its own config flag, because it's a meaningfully bigger trust
+;; boundary than a single sandboxed application or a systemd-less daemon.
+;;
+;; It also checks whether the target distro's image actually ships systemd
+;; at all (see Distro.init_system) — requesting --systemd=always on an
+;; image that boots BSD-style /etc/rc.d scripts (Slackware) wouldn't fail
+;; loudly, it would just silently do nothing useful, which is worse than
+;; not adding the flag and saying so.
+fn build_systemd_args(ctx: GraphicsContext, allowed: bool, kind_label: string) -> [string] is
+    if ctx.init_system != "" && ctx.init_system != "systemd" is
+        helpers::print_warn("Package needs systemd (type '" + kind_label + "'), but this distro's image uses '" + ctx.init_system + "', not systemd — skipping --systemd=always since it wouldn't do anything on this image. The package installs, but won't be managed by an init system inside the container.")
+        let __empty1: [string] = []
+        return __empty1
+    end
+    if !allowed is
+        helpers::print_warn("Package needs systemd/cgroup access (type '" + kind_label + "'), but that's disabled in config.hk — running with app-level privileges only")
+        let __empty2: [string] = []
+        return __empty2
+    end
+    return ["--systemd", "always", "--volume", "/sys/fs/cgroup:/sys/fs/cgroup:rw"]
+end
+
+;; ---------------------------------------------------------------------------
+;; Desktop launcher (.desktop) + icon extraction
+;; ---------------------------------------------------------------------------
+
+pub fn desktop_entry_dir() -> string is
+    return util::path_join(util::home_dir(), ".local/share/applications")
+end
+
+fn icon_cache_dir() -> string is
+    return util::path_join(util::home_dir(), ".local/share/icons/isolator")
+end
+
+;; extract_icon best-effort copies an icon for pkg out of the container into
+;; a host-side icon cache, returning the path (or "" if none was found, in
+;; local_file_ext returns the extension of the file name in `path`
+;; (including the leading dot, e.g. ".png"), or "" if there is none.
+;; `file_ext` isn't a real H# builtin (it exists in the interpreter but
+;; was never wired into the LLVM backend), so this is a small local
+;; helper instead of a compiler dependency.
+fn local_file_ext(path: string) -> string is
+    let slash: int = string_rfind(path, "/")
+    let base: string = if slash >= 0 then string_slice(path, slash + 1, string_len(path)) else path 
+    let dot: int = string_rfind(base, ".")
+    if dot <= 0 is return "" end
+    return string_slice(base, dot, string_len(base))
+end
+
+;; which case callers should fall back to a generic icon name).
+pub fn extract_icon(cont: string, pkg: string) -> string is
+    let __dstr_icon: (string, bool) = exec::exec_in_container_with_output(cont,
+        "find /usr/share/icons /usr/share/pixmaps -iname '*" + pkg + "*' -type f 2>/dev/null | head -n1", false)
+    let candidates: string = __dstr_icon.0
+    let ok: bool = __dstr_icon.1
+    if !ok || candidates == "" is return "" end
+    if !util::dir_create_all(icon_cache_dir()) is return "" end
+    let mut ext: string = local_file_ext(candidates)
+    if ext == "" is ext = ".png" end
+    let dest: string = util::path_join(icon_cache_dir(), pkg + ext)
+    if !exec::exec_command(constants::PODMAN_BIN, ["cp", cont + ":" + candidates, dest]) is return "" end
+    return dest
+end
+
+;; generate_desktop_entry writes a .desktop launcher pointing at the
+;; wrapper script in ~/.local/bin, so GUI/DE packages show up in the host's
+;; application menu exactly like natively installed software.
+;; Returns "" on success, or an error message.
+pub fn generate_desktop_entry(pkg: string, cont_name: string, pkg_type: string) -> string is
+    if pkg_type != "gui" && pkg_type != "de" is return "" end
+    if !util::dir_create_all(desktop_entry_dir()) is return "failed to create " + desktop_entry_dir() end
+
+    let mut icon: string = extract_icon(cont_name, pkg)
+    if icon == "" is icon = "application-x-executable" end
+
+    let wrapper_path: string = util::path_join(util::path_join(util::home_dir(), ".local/bin"), pkg)
+    let entry: string =
+        "[Desktop Entry]\n" +
+        "Type=Application\n" +
+        "Name=" + pkg + " (Isolator)\n" +
+        "Comment=Installed via Isolator in container " + cont_name + "\n" +
+        "Exec=" + wrapper_path + " %U\n" +
+        "Icon=" + icon + "\n" +
+        "Terminal=false\n" +
+        "Categories=Utility;\n" +
+        "X-Isolator-Container=" + cont_name + "\n"
+
+    let dest: string = util::path_join(desktop_entry_dir(), "isolator-" + pkg + ".desktop")
+    let tmp: string = dest + ".tmp"
+    file_write(tmp, entry)
+    if !util::file_rename(tmp, dest) is return "failed to install desktop entry" end
+    return ""
+end
+
+;; remove_desktop_entry deletes the launcher and cached icon created for pkg.
+pub fn remove_desktop_entry(pkg: string) is
+    let entry_path: string = util::path_join(desktop_entry_dir(), "isolator-" + pkg + ".desktop")
+    if file_exists(entry_path) is file_delete(entry_path) end
+
+    let entries: [string] = util::list_dir_names(icon_cache_dir())
+    let n: int = array_len(entries)
+    let mut i: int = 0
+    while i < n is
+        let name: string = entries[i]
+        if string_starts_with(name, pkg + ".") is
+            let p: string = util::path_join(icon_cache_dir(), name)
+            if file_exists(p) is file_delete(p) end
+        end
+        i += 1
+    end
+end
+
+;; ---------------------------------------------------------------------------
+;; Human-readable report, used by `isolator init` / `isolator status`
+;; ---------------------------------------------------------------------------
+
+;; print_gpu_report prints what Isolator auto-detected, so users understand
+;; exactly what a GUI install will wire up before they run one.
+;; `uid` is passed in by the caller (see helpers_state.h#'s current_uid()).
+pub fn print_gpu_report(uid: int) is
+    let gpu: string   = detect_gpu()
+    let audio: string = detect_audio(uid)
+
+    write("")
+    write(bold(yellow("  Graphics & Audio Detection")))
+    write("    GPU:   " + gpu_label(gpu))
+    write("    Audio: " + audio_label(audio))
+    if util::path_exists("/tmp/.X11-unix") is
+        write("    X11:   " + bold(green("available")))
+    else is
+        write("    X11:   " + dim("not found"))
+    end
+    let mut wayland_display: string = env_get("WAYLAND_DISPLAY")
+    if wayland_display == "" is wayland_display = "wayland-0" end
+    if util::path_exists(util::path_join("/run/user/" + to_string(uid), wayland_display)) is
+        write("    Wayland: " + bold(green("available (" + wayland_display + ")")))
+    else is
+        write("    Wayland: " + dim("not found"))
+    end
+    if gpu == "nvidia" || gpu == "hybrid" is
+        if nvidia_cdi_available() is
+            write("    NVIDIA CDI: " + bold(green("configured — GPU passthrough will use it")))
+        else is
+            write("    NVIDIA CDI: " + bold(yellow("not configured — falling back to manual device mounts")))
+            write(dim("      Install nvidia-container-toolkit and run 'nvidia-ctk cdi generate' for a more robust setup."))
+        end
+    end
+    write("")
+end
+
+fn gpu_label(v: string) -> string is
+    if v == "nvidia" is return bold(green("NVIDIA")) end
+    if v == "amd"    is return bold(green("AMD")) end
+    if v == "intel"  is return bold(green("Intel")) end
+    if v == "hybrid" is return bold(green("Hybrid (Intel/AMD + NVIDIA)")) end
+    return dim("none detected")
+end
+
+fn audio_label(a: string) -> string is
+    if a == "pipewire"   is return bold(green("PipeWire")) end
+    if a == "pulseaudio" is return bold(green("PulseAudio")) end
+    if a == "alsa"       is return bold(green("ALSA (direct /dev/snd)")) end
+    return dim("none detected")
+end
