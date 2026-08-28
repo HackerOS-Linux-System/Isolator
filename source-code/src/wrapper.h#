@@ -1,0 +1,21 @@
+mod util
+mod constants
+
+pub fn create_wrapper(pkg: string, cont_name: string) -> bool is
+    let bin_dir: string = util::path_join(util::home_dir(), ".local/bin")
+    if !util::dir_create_all(bin_dir) is return false end
+    let file_path: string = util::path_join(bin_dir, pkg)
+    let content: string = "#!/bin/sh\nexec " + constants::PODMAN_BIN + " exec -it " + cont_name + " " + pkg + " \"$@\"\n"
+    file_write(file_path, content)
+    let __dstr116: (int, string) = util::run_capture("chmod 755 " + util::shell_quote(file_path))
+    let rc: int = __dstr116.0
+    let _out: string = __dstr116.1
+    return rc == 0
+end
+
+pub fn remove_wrapper(pkg: string) -> bool is
+    let file_path: string = util::path_join(util::path_join(util::home_dir(), ".local/bin"), pkg)
+    if !file_exists(file_path) is return true end
+    file_delete(file_path)
+    return true
+end
