@@ -1,0 +1,63 @@
+mod repo
+mod deps
+mod helpers_state
+mod helpers
+mod types
+
+pub fn handle_info(pkg: string) is
+    if !repo::load_repo(false) is return end
+    let repo_packages: [PackageInfo] = repo::read_repo_packages()
+
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        let p: PackageInfo = repo_packages[i]
+        if p.name == pkg is
+            write("")
+            write(bold(cyan(" Package Info ")))
+            write("")
+            write("  " + bold("Name:   ") + "  " + cyan(p.name))
+            write("  " + bold("Distro: ") + "  " + cyan(p.distro))
+            write("  " + bold("Type:   ") + "  " + p.kind)
+            if array_len(p.libs) > 0 is
+                write("  " + bold("Libs:   ") + "  " + string_join_local(p.libs))
+            end
+            if p.kind == "lib" is
+                let used_by: [string] = deps::reverse_lib_dependents(p.name, p.distro, repo_packages)
+                if array_len(used_by) > 0 is
+                    write("  " + bold("Used by:") + "  " + string_join_local(used_by))
+                else is
+                    write("  " + bold("Used by:") + "  " + dim("no other catalog package currently depends on this"))
+                end
+            end
+            let installed: [InstalledPackage] = helpers_state::load_installed()
+            let __dstr88: (bool, InstalledPackage) = helpers_state::find_installed(installed, pkg)
+            let found: bool = __dstr88.0
+            let ip: InstalledPackage = __dstr88.1
+            if found is
+                let iso: string = if ip.isolated then " (isolated)" else "" 
+                write("  " + bold("Status: ") + "  " + green("installed" + iso))
+                write("  " + bold("Cont:   ") + "  " + ip.cont)
+                write("")
+                return
+            end
+            write("  " + bold("Status: ") + "  " + dim("not installed"))
+            write("")
+            return
+        end
+        i += 1
+    end
+    helpers::print_error("Package '" + pkg + "' not found")
+end
+
+fn string_join_local(parts: [string]) -> string is
+    let mut out: string = ""
+    let n: int = array_len(parts)
+    let mut i: int = 0
+    while i < n is
+        if i > 0 is out = out + ", " end
+        out = out + parts[i]
+        i += 1
+    end
+    return out
+end
