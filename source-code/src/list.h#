@@ -1,0 +1,29 @@
+mod helpers_state
+mod tui
+mod helpers
+mod types
+
+pub fn handle_list() is
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    if array_len(installed) == 0 is
+        helpers::print_info("No packages installed yet")
+        return
+    end
+    let columns: [TableColumn] = [
+        TableColumn { title: "Package",   width: 22 },
+        TableColumn { title: "Distro",    width: 14 },
+        TableColumn { title: "Type",      width: 6 },
+        TableColumn { title: "Container", width: 28 },
+        TableColumn { title: "Isolated",  width: 9 },
+    ]
+    let mut rows: [TableRow] = []
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        let ip: InstalledPackage = installed[i]
+        let iso: string = if ip.isolated then "yes" else "no" 
+        rows = array_push(rows, TableRow { cells: [ip.pkg, ip.distro, ip.kind, ip.cont, iso] })
+        i += 1
+    end
+    tui::run_table("Installed Packages", columns, rows)
+end
