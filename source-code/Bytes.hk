@@ -1,0 +1,14 @@
+[package]
+-> name        => isolator
+-> version     => 0.7
+-> description => Podman-based package manager for HackerOS
+-> author      => HackerOS-Linux-System
+-> license     => Apache-2.0
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/isolator
+
+[deps]
+-> libc => dynamic
