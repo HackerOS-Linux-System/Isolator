@@ -1,0 +1,9 @@
+mod repo
+mod helpers
+
+pub fn handle_refresh() is
+    helpers::print_info("Force-refreshing repository list...")
+    if repo::load_repo(true) is
+        helpers::print_success("Repository refreshed")
+    end
+end
