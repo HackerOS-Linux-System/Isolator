@@ -1,5 +1,9 @@
 use "std -> env" from "env"
-use "std -> json" from "json"
+;; FIX: `std -> json`'s get_obj/get_int have no working backend on this
+;; compiler (undefined fn at codegen time — see jsonlite.h#'s doc comment
+;; for the full story). jsonlite.h# is a real JSON parser that actually
+;; works, used below instead.
+mod jsonlite
 
 extern dynamic [c] is
     fn exit(code: int)
@@ -168,12 +172,12 @@ fn run_status_cmd(args: [string]) is
         exit(1)
     end
 
-    let obj: any = json::parse(result.body)
-    let status: any = json::get_obj(obj, "status")
-    write("uptime:              " + to_string(json::get_int(status, "uptime_secs")) + "s")
-    write("update interval:     " + to_string(json::get_int(status, "update_interval_secs")) + "s")
-    write("autoremove interval: " + to_string(json::get_int(status, "autoremove_interval_secs")) + "s")
-    write("clean interval:      " + to_string(json::get_int(status, "clean_interval_secs")) + "s")
+    let obj: jsonlite::JVal = jsonlite::jl_parse(result.body)
+    let status: jsonlite::JVal = jsonlite::jl_get_obj(obj, "status")
+    write("uptime:              " + to_string(jsonlite::jl_get_int(status, "uptime_secs")) + "s")
+    write("update interval:     " + to_string(jsonlite::jl_get_int(status, "update_interval_secs")) + "s")
+    write("autoremove interval: " + to_string(jsonlite::jl_get_int(status, "autoremove_interval_secs")) + "s")
+    write("clean interval:      " + to_string(jsonlite::jl_get_int(status, "clean_interval_secs")) + "s")
     write("last run:")
     write("  (see daemon log for per-task timestamps — compact JSON summary above)")
 end
