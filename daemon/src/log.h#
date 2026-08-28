@@ -29,7 +29,14 @@ pub fn log_printf(l: Logger, msg: string) is
     if l.path == "" is
         write(string_trim_end_local(line))
     else is
-        fs_append(l.path, line)
+        ;; `fs_append` exists in the interpreter but isn't wired into the
+        ;; LLVM backend ("undefined fn: fs_append" at compile time), so
+        ;; append via read-existing + write-back instead — the log file
+        ;; is small and line-buffered by nature, so this isn't a
+        ;; meaningful performance concern for a daemon that logs at most
+        ;; once a minute.
+        let existing: string = if file_exists(l.path) then file_read(l.path) else "" 
+        file_write(l.path, existing + line)
     end
 end
 
