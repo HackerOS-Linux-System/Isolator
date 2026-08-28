@@ -1,0 +1,66 @@
+mod helpers
+
+pub struct TableColumn is
+    pub title: string
+    pub width: int
+end
+
+;; A row is just its cell values, positionally matched to columns.
+pub struct TableRow is
+    pub cells: [string]
+end
+
+pub fn run_table(title: string, columns: [TableColumn], rows: [TableRow]) is
+    if array_len(rows) == 0 is
+        helpers::print_info("No results")
+        return
+    end
+
+    write("")
+    write(bold(cyan(" " + title + " ")))
+    write("")
+
+    ;; Header
+    let mut header: string = ""
+    let nc: int = array_len(columns)
+    let mut ci: int = 0
+    while ci < nc is
+        header = header + pad_to(columns[ci].title, columns[ci].width) + "  "
+        ci += 1
+    end
+    write(bold(header))
+
+    let mut sep: string = ""
+    let mut si: int = 0
+    while si < nc is
+        sep = sep + string_repeat("-", columns[si].width) + "  "
+        si += 1
+    end
+    write(dim(sep))
+
+    ;; Rows
+    let nr: int = array_len(rows)
+    let mut ri: int = 0
+    while ri < nr is
+        let row: TableRow = rows[ri]
+        let mut line: string = ""
+        let mut cj: int = 0
+        while cj < nc is
+            let cell: string = if cj < array_len(row.cells) then row.cells[cj] else "" 
+            line = line + pad_to(cell, columns[cj].width) + "  "
+            cj += 1
+        end
+        write(line)
+        ri += 1
+    end
+    write("")
+end
+
+fn pad_to(s: string, width: int) -> string is
+    let len: int = string_len(s)
+    if len >= width is
+        if width <= 1 is return s end
+        return string_slice(s, 0, width - 1) + "…"
+    end
+    return s + string_repeat(" ", width - len)
+end
