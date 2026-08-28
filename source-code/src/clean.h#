@@ -1,0 +1,63 @@
+mod exec
+mod util
+mod helpers
+mod constants
+
+pub fn handle_clean(dry_run: bool) is
+    if dry_run is
+        helpers::print_info("[dry-run] Would run:")
+        helpers::print_info("  - podman image prune -f")
+        helpers::print_info("  - podman system prune -f")
+        let dir: string = util::path_join(util::home_dir(), constants::CONFIG_DIR)
+        let entries: [string] = util::list_dir_names(dir)
+        let count: int = count_tmp_files(entries)
+        if count > 0 is
+            helpers::print_info("  - remove " + to_string(count) + " leftover .tmp file(s) from " + dir)
+        end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Cleaning up Podman image cache...")
+    if exec::exec_command(constants::PODMAN_BIN, ["image", "prune", "-f"]) is
+        helpers::print_success("Dangling images removed")
+    else is
+        helpers::print_warn("podman image prune reported an issue (continuing)")
+    end
+
+    helpers::print_step("Pruning build cache...")
+    exec::exec_command(constants::PODMAN_BIN, ["system", "prune", "-f"])
+
+    let dir: string = util::path_join(util::home_dir(), constants::CONFIG_DIR)
+    let entries: [string] = util::list_dir_names(dir)
+    let mut removed: int = 0
+    let n: int = array_len(entries)
+    let mut i: int = 0
+    while i < n is
+        let name: string = entries[i]
+        if string_ends_with(name, ".tmp") is
+            let path: string = util::path_join(dir, name)
+            if file_exists(path) is
+                file_delete(path)
+                removed += 1
+            end
+        end
+        i += 1
+    end
+    if removed > 0 is
+        helpers::print_success("Removed " + to_string(removed) + " leftover temp file(s)")
+    end
+
+    helpers::print_success("Clean complete")
+end
+
+fn count_tmp_files(entries: [string]) -> int is
+    let mut count: int = 0
+    let n: int = array_len(entries)
+    let mut i: int = 0
+    while i < n is
+        if string_ends_with(entries[i], ".tmp") is count += 1 end
+        i += 1
+    end
+    return count
+end
