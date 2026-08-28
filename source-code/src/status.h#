@@ -1,0 +1,109 @@
+mod helpers_state
+mod container
+mod distros
+mod tui
+mod helpers
+mod util
+mod types
+
+struct ContainerPkgs is
+    pub cont: string
+    pub pkgs: [string]
+end
+
+fn pkgs_for_container(map_: [ContainerPkgs], cont: string) -> [string] is
+    let n: int = array_len(map_)
+    let mut i: int = 0
+    while i < n is
+        if map_[i].cont == cont is return map_[i].pkgs end
+        i += 1
+    end
+    let __empty1: [string] = []
+    return __empty1
+end
+
+fn has_container(map_: [ContainerPkgs], cont: string) -> bool is
+    let n: int = array_len(map_)
+    let mut i: int = 0
+    while i < n is
+        if map_[i].cont == cont is return true end
+        i += 1
+    end
+    return false
+end
+
+fn update_container_pkgs(map_: [ContainerPkgs], cont: string, pkg: string) -> [ContainerPkgs] is
+    let mut result: [ContainerPkgs] = []
+    let n: int = array_len(map_)
+    let mut i: int = 0
+    let mut found: bool = false
+    while i < n is
+        if map_[i].cont == cont is
+            result = array_push(result, ContainerPkgs { cont: cont, pkgs: array_push(map_[i].pkgs, pkg) })
+            found = true
+        else is
+            result = array_push(result, map_[i])
+        end
+        i += 1
+    end
+    if !found is result = array_push(result, ContainerPkgs { cont: cont, pkgs: [pkg] }) end
+    return result
+end
+
+pub fn handle_status() is
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    let mut pkg_map: [ContainerPkgs] = []
+
+    let ni: int = array_len(installed)
+    let mut i: int = 0
+    while i < ni is
+        let ip: InstalledPackage = installed[i]
+        pkg_map = update_container_pkgs(pkg_map, ip.cont, ip.pkg)
+        i += 1
+    end
+
+    let columns: [TableColumn] = [
+        TableColumn { title: "Container", width: 26 },
+        TableColumn { title: "Status",    width: 12 },
+        TableColumn { title: "Size",      width: 18 },
+        TableColumn { title: "Packages",  width: 34 },
+    ]
+    let mut rows: [TableRow] = []
+    let bases: [string] = distros::all_container_base_names()
+
+    let containers: [ContainerInfo] = container::get_containers()
+    let nc: int = array_len(containers)
+    let mut ci: int = 0
+    while ci < nc is
+        let db: ContainerInfo = containers[ci]
+        let nn: int = array_len(db.names)
+        let mut ni2: int = 0
+        while ni2 < nn is
+            let name: string = db.names[ni2]
+            let mut is_our: bool = false
+            let nb: int = array_len(bases)
+            let mut bi: int = 0
+            while bi < nb is
+                let base: string = bases[bi]
+                if name == base || string_starts_with(name, base + "-") is
+                    is_our = true
+                    bi = nb
+                end
+                bi += 1
+            end
+            if is_our is
+                let size: string = container::get_container_size(name)
+                let pkgs: [string] = pkgs_for_container(pkg_map, name)
+                rows = array_push(rows, TableRow { cells: [name, db.state, size, util::string_join(pkgs, ", ")] })
+            end
+            ni2 += 1
+        end
+        ci += 1
+    end
+
+    if array_len(rows) == 0 is
+        helpers::print_info("No managed containers found")
+        return
+    end
+    tui::run_table("Container Status", columns, rows)
+end
