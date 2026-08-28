@@ -1,0 +1,234 @@
+mod constants
+mod helpers
+mod util
+mod config
+mod gui
+mod exec
+mod distros
+mod types
+;; FIX: `std -> json`'s parse_array/get_arr/str_at have no working
+;; backend on this compiler (undefined fn at codegen time — see
+;; jsonlite.h#'s doc comment for the full story). jsonlite.h# is a real
+;; JSON parser that actually works, used below instead.
+mod jsonlite
+
+;; check_podman verifies podman is available. Returns "" (ok) or an error.
+pub fn check_podman() -> string is
+    let __dstr56: (int, string) = util::run_capture("command -v " + constants::PODMAN_BIN + " >/dev/null 2>&1")
+    let rc: int = __dstr56.0
+    let _out: string = __dstr56.1
+    if rc == 0 is return "" end
+    return "podman not found in PATH"
+end
+
+;; pull_image pulls image, printing a simple status line (H# has no
+;; terminal-spinner primitive — see exec.h#'s note on the same tradeoff).
+;; Podman's own `pull` progress bars are nice on an interactive TTY but
+;; vanish (or spam plain text) when output is redirected/logged/piped; this
+;; gives a consistent, predictable indicator either way. The container
+;; creation step afterward then uses `--pull missing` instead of
+;; `--pull always`, so this is a pure addition of feedback, not a behavior
+;; change — the net result (fresh image if needed, cached reuse otherwise)
+;; is the same as before.
+pub fn pull_image(image: string) -> bool is
+    write("  Pulling image " + image + "...")
+    let __dstr57: (int, string) = util::run_argv(constants::PODMAN_BIN, ["pull", image])
+    let rc: int = __dstr57.0
+    let output: string = __dstr57.1
+
+    if rc != 0 is
+        helpers::print_error("Failed to pull image " + image)
+        if string_trim(output) != "" is write(dim(output)) end
+        return false
+    end
+    helpers::print_success("Image ready: " + image)
+    return true
+end
+
+;; get_containers returns list of all Podman containers (parsed JSON).
+pub fn get_containers() -> [ContainerInfo] is
+    let __dstr58: (int, string) = util::run_argv(constants::PODMAN_BIN, ["ps", "-a", "--format", "json"])
+    let rc: int = __dstr58.0
+    let out: string = __dstr58.1
+    if rc != 0 is
+        let __empty1: [ContainerInfo] = []
+        return __empty1
+    end
+    return parse_container_json(out)
+end
+
+fn parse_container_json(raw: string) -> [ContainerInfo] is
+    let items: [jsonlite::JVal] = jsonlite::jl_parse_array(raw)
+    let n: int = array_len(items)
+    let mut result: [ContainerInfo] = []
+    let mut i: int = 0
+    while i < n is
+        let obj: jsonlite::JVal = items[i]
+        let id: string     = jsonlite::jl_get_str(obj, "Id")
+        let state: string  = jsonlite::jl_get_str(obj, "State")
+        let status: string = jsonlite::jl_get_str(obj, "Status")
+        let size: string   = jsonlite::jl_get_str(obj, "Size")
+        let names_raw: [jsonlite::JVal] = jsonlite::jl_get_arr(obj, "Names")
+        let mut names: [string] = []
+        let nn: int = array_len(names_raw)
+        let mut j: int = 0
+        while j < nn is
+            names = array_push(names, jsonlite::jl_str_at(names_raw, j))
+            j += 1
+        end
+        result = array_push(result, ContainerInfo { id: id, names: names, state: state, status: status, size: size })
+        i += 1
+    end
+    return result
+end
+
+pub fn container_exists(name: string) -> bool is
+    let containers: [ContainerInfo] = get_containers()
+    let nc: int = array_len(containers)
+    let mut i: int = 0
+    while i < nc is
+        let names: [string] = containers[i].names
+        let nn: int = array_len(names)
+        let mut j: int = 0
+        while j < nn is
+            if names[j] == name is return true end
+            j += 1
+        end
+        i += 1
+    end
+    return false
+end
+
+pub fn get_our_containers() -> [string] is
+    let containers: [ContainerInfo] = get_containers()
+    let bases: [string] = distros::all_container_base_names()
+    let mut ours: [string] = []
+    let nc: int = array_len(containers)
+    let mut i: int = 0
+    while i < nc is
+        let names: [string] = containers[i].names
+        let nn: int = array_len(names)
+        let mut j: int = 0
+        while j < nn is
+            let n: string = names[j]
+            let nb: int = array_len(bases)
+            let mut k: int = 0
+            while k < nb is
+                let base: string = bases[k]
+                if n == base || string_starts_with(n, base + "-") is
+                    ours = array_push(ours, n)
+                    k = nb  ;; break
+                end
+                k += 1
+            end
+            j += 1
+        end
+        i += 1
+    end
+    return ours
+end
+
+pub fn get_container_size(name: string) -> string is
+    let __dstr59: (int, string) = util::run_argv(constants::PODMAN_BIN, ["ps", "-a", "--size", "--format", "json", "--filter", "name=" + name])
+    let rc: int = __dstr59.0
+    let out: string = __dstr59.1
+    if rc != 0 is return "unknown" end
+    let list: [ContainerInfo] = parse_container_json(out)
+    if array_len(list) == 0 is return "unknown" end
+    return list[0].size
+end
+
+;; get_podman_run_args builds arguments for podman run -d.
+;; GUI/audio/GPU/theme/desktop-environment support is delegated to
+;; gui::build_graphics_args, which is driven by the user's config and by
+;; what's actually detected on the host, instead of blindly mounting
+;; everything for every container type.
+pub fn get_podman_run_args(name: string, image: string, home_dir: string, pkg_type: string, init_system: string) -> [string] is
+    let uid: int = util::current_uid()
+    let gid: int = util::current_gid()
+    let mut home_host: string = home_dir
+    if home_host == "" is home_host = util::home_dir() end
+
+    let mut args: [string] = [
+        "run", "-d",
+        "--name", name,
+        "--hostname", name,
+        "--pull", "missing",
+        "--userns=keep-id",
+        "--user", to_string(uid) + ":" + to_string(gid),
+        "--workdir", "/home/user",
+        "--env", "HOME=/home/user",
+        "--env", "USER=" + env_get("USER"),
+    ]
+
+    ;; Mount home directory
+    args = array_push(args, "--volume")
+    args = array_push(args, home_host + ":/home/user:rw")
+
+    let cfg: Config = config::load_config()
+    args = array_concat(args, gui::build_graphics_args(GraphicsContext {
+        uid: uid, gid: gid, cont_name: name, cfg: cfg, pkg_type: pkg_type, init_system: init_system,
+    }))
+
+    ;; SELinux (if enabled) – may be needed for X11
+    args = array_push(args, "--security-opt")
+    args = array_push(args, "label=type:container_runtime_t")
+
+    ;; BlackArch's official image requires a permissive seccomp profile —
+    ;; several of its tools (raw sockets, ptrace-based tools, etc.) trip the
+    ;; default Podman seccomp filter otherwise. See:
+    ;; https://hub.docker.com/r/blackarchlinux/blackarch
+    if string_contains(image, "blackarch") is
+        args = array_push(args, "--security-opt")
+        args = array_push(args, "seccomp=unconfined")
+    end
+
+    ;; Keep the container alive with a dummy command
+    args = array_push(args, "--entrypoint")
+    args = array_push(args, "/bin/sh")
+    args = array_push(args, image)
+    args = array_push(args, "-c")
+    args = array_push(args, "while true; do sleep 1000; done")
+
+    return args
+end
+
+;; create_container creates a Podman container and starts it with a
+;; persistent dummy command. Returns true on success, false otherwise.
+pub fn create_container(name: string, image: string, home_dir: string, pkg_type: string, init_system: string) -> bool is
+    if !pull_image(image) is return false end
+    let args: [string] = get_podman_run_args(name, image, home_dir, pkg_type, init_system)
+    helpers::print_step("Creating container " + name + " (image: " + image + ")...")
+    if !exec::exec_command(constants::PODMAN_BIN, args) is
+        ;; If run fails, try to remove any leftover container
+        exec::exec_command(constants::PODMAN_BIN, ["rm", "--force", name])
+        return false
+    end
+    helpers::print_success("Container '" + name + "' created and started")
+    return true
+end
+
+;; ensure_container_running starts the container if it is not already
+;; running.
+;; Note: if the container was created with the old method (without
+;; persistent command), it may exit immediately after start. This function
+;; will try to start it, but it's recommended to remove such containers and
+;; let them be recreated with the new method.
+pub fn ensure_container_running(name: string) -> bool is
+    let __dstr60: (int, string) = util::run_argv(constants::PODMAN_BIN, ["ps", "-a", "--filter", "name=" + name, "--format", "json"])
+    let rc: int = __dstr60.0
+    let out: string = __dstr60.1
+    if rc != 0 is return false end
+    let containers: [ContainerInfo] = parse_container_json(out)
+    if array_len(containers) == 0 is return false end
+    if containers[0].state == "running" is return true end
+    helpers::print_step("Starting container " + name + "...")
+    return exec::exec_command(constants::PODMAN_BIN, ["start", name])
+end
+
+;; init_container runs the initial package manager sync inside a fresh
+;; container.
+pub fn init_container(cont: string, d: Distro) -> bool is
+    let init_cmd: string = distros::adapter_init(d.distro_key)
+    return exec::exec_in_container_with_spinner(cont, init_cmd, "Initializing package manager in container...", true)
+end
