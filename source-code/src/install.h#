@@ -1,0 +1,259 @@
+mod security
+mod repo
+mod helpers_state
+mod distros
+mod config
+mod container
+mod deps
+mod exec
+mod rcd
+mod wrapper
+mod gui
+mod helpers
+mod util
+mod types
+mod constants
+
+fn catalog_libs_to_names(libs: [PackageInfo]) -> [string] is
+    let mut names: [string] = []
+    let n: int = array_len(libs)
+    let mut i: int = 0
+    while i < n is
+        names = array_push(names, libs[i].name)
+        i += 1
+    end
+    return names
+end
+
+fn bool_label_str(b: bool, if_true: string, if_false: string) -> string is
+    return if b then if_true else if_false 
+end
+
+pub fn handle_install(pkg: string, isolated: bool, dry_run: bool) is
+    let name_err: string = security::validate_package_name(pkg)
+    if name_err != "" is
+        helpers::print_error(name_err)
+        return
+    end
+
+    if !repo::load_repo(false) is return end
+
+    let repo_packages: [PackageInfo] = repo::read_repo_packages()
+    let __dstr77: (bool, PackageInfo) = find_package(repo_packages, pkg)
+    let found: bool = __dstr77.0
+    let info: PackageInfo = __dstr77.1
+    if !found is
+        helpers::print_error("Package '" + pkg + "' not found in repository")
+        helpers::print_info("Try: isolator search <term>")
+        return
+    end
+    let libs_err: string = security::validate_package_names(info.libs)
+    if libs_err != "" is
+        helpers::print_error("Repository entry has unsafe dependency list: " + libs_err)
+        return
+    end
+
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    let __dstr78: (bool, InstalledPackage) = helpers_state::find_installed(installed, pkg)
+    let already: bool = __dstr78.0
+    let existing: InstalledPackage = __dstr78.1
+    if already is
+        helpers::print_warn("Package '" + pkg + "' is already installed (container: " + existing.cont + ")")
+        return
+    end
+
+    let __dstr79: (bool, Distro) = distros::lookup_distro(info.distro)
+    let distro_ok: bool = __dstr79.0
+    let d: Distro = __dstr79.1
+    if !distro_ok is
+        helpers::print_error("Unknown distro: " + info.distro)
+        return
+    end
+
+    if info.kind == "de" && !config::load_config().allow_desktop_environments is
+        helpers::print_warn("This package is a full desktop environment. Enable 'allow_desktop_environments' in config.hk for proper systemd/cgroup support, otherwise it will run with regular app-level privileges only.")
+    end
+    if info.kind == "system" && !config::load_config().allow_system_containers is
+        helpers::print_warn("This package is a systemd-managed service. Enable 'allow_system_containers' in config.hk for proper systemd/cgroup support, otherwise it will run with regular app-level privileges only.")
+    end
+
+    helpers::print_info("Installing " + bold(pkg) + "  [distro: " + cyan(info.distro) + " | type: " + dim(info.kind) + "]")
+
+    ;; `+ ""` forces a fresh string allocation rather than a move out of
+    ;; `d.cont_name` — `d`'s other fields (`.image`, `.init_system`) are
+    ;; still read later in this function, and H#'s move-checker treats a
+    ;; partial move of one field as invalidating the whole struct (see the
+    ;; "used after being moved" warning this silences).
+    let mut cont_name: string = d.cont_name + ""
+    let mut home_dir: string = env_get("HOME")
+    if isolated is
+        cont_name = cont_name + "-" + pkg
+        home_dir = util::path_join(util::path_join(home_dir, constants::HOMES_DIR), pkg)
+    end
+
+    if dry_run is
+        let __dstr80: ([PackageInfo], [string]) = deps::classify_libs(info, repo_packages)
+        let catalog_libs: [PackageInfo] = __dstr80.0
+        let raw_libs: [string] = __dstr80.1
+        let mut lib_names: [string] = catalog_libs_to_names(catalog_libs)
+        let mut ln: [string] = []
+        let ncl: int = array_len(lib_names)
+        let mut i: int = 0
+        while i < ncl is ln = array_push(ln, lib_names[i] + " (lib)") i += 1 end
+        lib_names = array_concat(ln, raw_libs)
+
+        helpers::print_info("[dry-run] Would install '" + pkg + "' as follows:")
+        write("  - image: " + d.image)
+        write("  - container: " + cont_name + bool_label_str(container::container_exists(cont_name), " (already exists, reused)", " (new)"))
+        if isolated is write("  - isolated home: " + home_dir) end
+        if array_len(lib_names) > 0 is
+            write("  - dependencies: " + util::string_join(lib_names, ", "))
+        end
+        let mut packages_to_install: [string] = array_concat(catalog_libs_to_names(catalog_libs), raw_libs)
+        packages_to_install = array_push(packages_to_install, pkg)
+        write("  - run in container: " + distros::adapter_install(info.distro) + " " + util::string_join(packages_to_install, " "))
+        if info.kind == "de" || info.kind == "lib" || info.kind == "system" is
+            write("  - no wrapper script (type: " + info.kind + ")")
+        else is
+            write("  - wrapper script: " + util::path_join(util::path_join(env_get("HOME"), ".local/bin"), pkg))
+        end
+        if config::load_config().create_desktop_entries && (info.kind == "gui" || info.kind == "de") is
+            write("  - .desktop launcher in ~/.local/share/applications")
+        end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    if isolated is
+        if !util::dir_create_all(home_dir) is
+            helpers::print_error("Failed to create isolated home directory")
+            return
+        end
+        let __dstr81: (int, string) = util::run_capture("chmod 700 " + util::shell_quote(home_dir))
+        let rc: int = __dstr81.0
+        let _out: string = __dstr81.1
+        helpers::print_info("Isolated mode: home → " + home_dir)
+    end
+
+    let mut new_container: bool = false
+    if !container::container_exists(cont_name) is
+        if !container::create_container(cont_name, d.image, home_dir, info.kind, d.init_system) is
+            helpers::print_error("Failed to create container '" + cont_name + "'")
+            return
+        end
+        new_container = true
+    else is
+        helpers::print_info("Reusing existing container '" + cont_name + "'")
+        if !container::ensure_container_running(cont_name) is
+            helpers::print_error("Failed to start container '" + cont_name + "'")
+            return
+        end
+    end
+
+    if new_container is
+        if !container::init_container(cont_name, d) is
+            helpers::print_warn("Package manager init returned non-zero (may be OK for some distros)")
+        end
+    end
+
+    let mut packages_to_install: [string] = [pkg]
+    let mut recognized_libs: [string] = []
+    if array_len(info.libs) > 0 is
+        let __dstr82: ([PackageInfo], [string]) = deps::classify_libs(info, repo_packages)
+        let _catalog_libs: [PackageInfo] = __dstr82.0
+        let raw_libs: [string] = __dstr82.1
+        let __dstr83: ([PackageInfo], [string], [PackageInfo]) = deps::resolve_transitive_libs(info, repo_packages)
+        let transitive_libs: [PackageInfo] = __dstr83.0
+        let cycles: [string] = __dstr83.1
+        let cross_distro: [PackageInfo] = __dstr83.2
+
+        let ncy: int = array_len(cycles)
+        let mut ci: int = 0
+        while ci < ncy is
+            helpers::print_warn("Dependency cycle detected (stopping recursion there): " + string_replace(cycles[ci], " -> ", " → "))
+            ci += 1
+        end
+        let ncd: int = array_len(cross_distro)
+        let mut cdi: int = 0
+        while cdi < ncd is
+            let cd: PackageInfo = cross_distro[cdi]
+            helpers::print_warn("'" + pkg + "' transitively depends on lib '" + cd.name + "', which is cataloged for '" + cd.distro + "' — but this install targets a '" + info.distro + "' container. This will probably fail.")
+            cdi += 1
+        end
+
+        let mut lib_names: [string] = []
+        let ntl: int = array_len(transitive_libs)
+        let mut ti: int = 0
+        while ti < ntl is
+            let l: PackageInfo = transitive_libs[ti]
+            lib_names = array_push(lib_names, l.name + dim(" (lib)"))
+            recognized_libs = array_push(recognized_libs, l.name)
+            ti += 1
+        end
+        lib_names = array_concat(lib_names, raw_libs)
+        helpers::print_info("Dependencies (" + to_string(array_len(lib_names)) + ", transitively resolved): " + util::string_join(lib_names, ", "))
+        packages_to_install = array_concat(array_concat(recognized_libs, raw_libs), [pkg])
+    end
+
+    let install_cmd: string = distros::adapter_install(info.distro) + " " + util::string_join(packages_to_install, " ")
+    if !exec::exec_in_container_with_spinner(cont_name, install_cmd, "Installing " + pkg + " in container...", true) is
+        helpers::print_error("Installation failed")
+        return
+    end
+
+    if info.kind == "de" is
+        helpers::print_info("This is a full desktop environment — there's no single binary to wrap.")
+        helpers::print_info("Enter it with: isolator exec " + pkg + " -- bash")
+    else if info.kind == "lib" is
+        helpers::print_info("This is a development library, not a runnable program — no wrapper script created.")
+        helpers::print_info("Build against it with: isolator exec " + pkg + " -- <your build command>")
+    else if info.kind == "system" is
+        if d.init_system == "systemd" is
+            helpers::print_info("This is a systemd-managed service, not a foreground program — no wrapper script created.")
+            helpers::print_info("Check it with: isolator exec " + pkg + " -- systemctl status")
+        else is
+            helpers::print_info("This distro's image has no systemd (init: " + d.init_system + ") — generating a classic /etc/rc.d/rc." + pkg + " script instead.")
+            let rcd_err: string = rcd::generate_rcd_script(cont_name, pkg)
+            if rcd_err != "" is
+                helpers::print_warn("Failed to generate rc.d script: " + rcd_err)
+            else is
+                helpers::print_success("Installed as /etc/rc.d/rc." + pkg + " (hooked into rc.local, started automatically on boot)")
+                helpers::print_info("Control it with: isolator exec " + pkg + " -- /etc/rc.d/rc." + pkg + " {{start|stop|restart|status}}")
+            end
+        end
+    else is
+        if !wrapper::create_wrapper(pkg, cont_name) is
+            helpers::print_error("Failed to create wrapper script in ~/.local/bin")
+            return
+        end
+    end
+
+    if config::load_config().create_desktop_entries && (info.kind == "gui" || info.kind == "de") is
+        let desktop_err: string = gui::generate_desktop_entry(pkg, cont_name, info.kind)
+        if desktop_err != "" is
+            helpers::print_warn("Installed, but failed to create application-menu launcher: " + desktop_err)
+        else is
+            helpers::print_success("Launcher added to your application menu")
+        end
+    end
+
+    let updated_installed: [InstalledPackage] = array_push(installed, InstalledPackage {
+        pkg: pkg, cont: cont_name, distro: info.distro, kind: info.kind,
+        isolated: isolated, requires: recognized_libs,
+    })
+    if !helpers_state::save_installed(updated_installed) is
+        helpers::print_error("Failed to save installed info")
+        return
+    end
+    helpers::print_success("'" + pkg + "' installed successfully → " + util::path_join(util::path_join(env_get("HOME"), ".local/bin"), pkg))
+end
+
+fn find_package(repo_packages: [PackageInfo], name: string) -> (bool, PackageInfo) is
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        if repo_packages[i].name == name is return (true, repo_packages[i]) end
+        i += 1
+    end
+    return (false, PackageInfo { name: "", distro: "", kind: "", libs: [] })
+end
