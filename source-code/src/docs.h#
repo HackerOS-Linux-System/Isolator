@@ -1,0 +1,22 @@
+mod helpers
+mod util
+
+pub let DOCS_URL: string = "https://hackeros-linux-system.github.io/HackerOS-Website/tools-docs/isolator.html"
+
+;; handle_docs opens Isolator's online documentation in the user's default
+;; browser via `xdg-open` (Isolator is Linux/HackerOS-focused, so unlike
+;; the Go original there's no darwin/windows branch to port — this is a
+;; deliberate, noted simplification, not a missed case). If that fails
+;; (headless server, no GUI, no opener installed), it just prints the URL
+;; so the person can open it themselves — never a hard failure for
+;; something this low-stakes.
+pub fn handle_docs() is
+    helpers::print_info("Opening Isolator documentation: " + DOCS_URL)
+    let __dstr69: (int, string) = util::run_argv("xdg-open", [DOCS_URL])
+    let rc: int = __dstr69.0
+    let _out: string = __dstr69.1
+    if rc != 0 is
+        helpers::print_warn("Couldn't launch a browser automatically")
+        write("Open this URL manually: " + DOCS_URL)
+    end
+end
