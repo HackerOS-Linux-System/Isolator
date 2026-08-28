@@ -1,0 +1,15 @@
+[package]
+-> name        => isolated
+-> version     => 0.7
+-> description => Podman-based package manager, always-isolated variant
+-> author      => HackerOS-Linux-System
+-> license     => Apache-2.0
+
+[build]
+-> lang    => h#
+-> entry   => src/main.h#
+-> output  => build/isolated
+-> include => ../source-code/src
+
+[deps]
+-> libc => dynamic
