@@ -1,0 +1,170 @@
+mod security
+mod helpers_state
+mod repo
+mod distros
+mod wrapper
+mod gui
+mod rcd
+mod exec
+mod util
+mod helpers
+mod constants
+mod types
+
+;; find_dependents returns the names of other installed packages, sharing
+;; pkg's container, whose recorded Requires (set at install time — see
+;; classify_libs in deps.h#) lists pkg. This reads directly from the
+;; persisted installed.hk state instead of re-deriving the same answer by
+;; re-scanning the repo's Libs lists on every removal — the repo lookup
+;; already happened once, at install time, and its result was saved.
+;;
+;; One consequence: a package installed before Requires existed (or whose
+;; only dependencies were raw, non-cataloged lib strings) won't show up as
+;; a recorded dependent even if it happens to still need pkg. That's a
+;; known, accepted trade-off for not re-deriving state that's supposed to
+;; be authoritative.
+fn find_dependents(pkg: string, cont: string, installed: [InstalledPackage]) -> [string] is
+    let mut dependents: [string] = []
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        let ip: InstalledPackage = installed[i]
+        if ip.pkg != pkg && ip.cont == cont is
+            let nr: int = array_len(ip.requires)
+            let mut j: int = 0
+            while j < nr is
+                if ip.requires[j] == pkg is
+                    dependents = array_push(dependents, ip.pkg)
+                    j = nr
+                end
+                j += 1
+            end
+        end
+        i += 1
+    end
+    return dependents
+end
+
+pub fn handle_remove(pkg: string, force: bool, dry_run: bool) is
+    let name_err: string = security::validate_package_name(pkg)
+    if name_err != "" is
+        helpers::print_error(name_err)
+        return
+    end
+
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    let __dstr111: (bool, InstalledPackage) = helpers_state::find_installed(installed, pkg)
+    let ok: bool = __dstr111.0
+    let ip: InstalledPackage = __dstr111.1
+    if !ok is
+        helpers::print_error("Package '" + pkg + "' is not installed")
+        return
+    end
+
+    if !repo::load_repo(false) is return end
+
+    let repo_packages: [PackageInfo] = repo::read_repo_packages()
+    let __dstr112: (bool, PackageInfo) = find_package(repo_packages, pkg)
+    let info_found: bool = __dstr112.0
+    let info: PackageInfo = __dstr112.1
+    if !info_found is
+        helpers::print_warn("Package '" + pkg + "' not found in repo — removing wrapper only")
+    end
+
+    if !ip.isolated is
+        let dependents: [string] = find_dependents(pkg, ip.cont, installed)
+        if array_len(dependents) > 0 is
+            helpers::print_warn("'" + pkg + "' is a dependency of: " + util::string_join(dependents, ", ") + " (sharing container '" + ip.cont + "')")
+            if !force is
+                helpers::print_error("Refusing to remove — pass --force to remove anyway and risk breaking those packages")
+                return
+            end
+            helpers::print_warn("--force given, proceeding anyway")
+        end
+    end
+
+    if dry_run is
+        helpers::print_info("[dry-run] Would remove '" + pkg + "' from container '" + ip.cont + "'")
+        write("  - remove wrapper script: " + util::path_join(util::path_join(env_get("HOME"), ".local/bin"), pkg))
+        write("  - remove .desktop launcher (if any)")
+        if info_found is
+            let mut packages_to_remove: [string] = [pkg]
+            if array_len(info.libs) > 0 is packages_to_remove = array_concat(packages_to_remove, info.libs) end
+            let __dstr113: (bool, Distro) = distros::lookup_distro(ip.distro)
+            let _ok2: bool = __dstr113.0
+            let d: Distro = __dstr113.1
+            write("  - run in container: " + distros::adapter_remove(ip.distro) + " " + util::string_join(packages_to_remove, " "))
+        end
+        if ip.isolated is
+            write("  - remove isolated container: " + ip.cont)
+            write("  - remove isolated home dir: " + util::path_join(util::path_join(env_get("HOME"), constants::HOMES_DIR), pkg))
+        end
+        helpers::print_info("[dry-run] No changes made")
+        return
+    end
+
+    helpers::print_info("Removing " + bold(pkg) + " from container '" + ip.cont + "'")
+
+    if !wrapper::remove_wrapper(pkg) is
+        helpers::print_error("Failed to remove wrapper script")
+        return
+    end
+    gui::remove_desktop_entry(pkg)
+    if ip.kind == "system" is
+        let __dstr114: (bool, Distro) = distros::lookup_distro(ip.distro)
+        let dok: bool = __dstr114.0
+        let d: Distro = __dstr114.1
+        if dok && d.init_system != "systemd" is
+            rcd::remove_rcd_script(ip.cont, pkg)
+        end
+    end
+
+    if info_found is
+        let __dstr115: (bool, Distro) = distros::lookup_distro(ip.distro)
+        let dok2: bool = __dstr115.0
+        let d2: Distro = __dstr115.1
+        if !dok2 is
+            helpers::print_error("Unknown distro: " + ip.distro)
+            return
+        end
+        let mut packages_to_remove: [string] = [pkg]
+        if array_len(info.libs) > 0 is
+            helpers::print_info("Also removing dependencies: " + util::string_join(info.libs, ", "))
+            packages_to_remove = array_concat(packages_to_remove, info.libs)
+        end
+        let remove_cmd: string = distros::adapter_remove(ip.distro) + " " + util::string_join(packages_to_remove, " ")
+        if !exec::exec_in_container_with_spinner(ip.cont, remove_cmd, "Removing " + pkg + " from container...", true) is
+            helpers::print_error("Package removal in container failed")
+            return
+        end
+    end
+
+    if ip.isolated is
+        helpers::print_step("Removing isolated container '" + ip.cont + "'...")
+        if !exec::exec_command(constants::PODMAN_BIN, ["rm", "--force", ip.cont]) is
+            helpers::print_error("Failed to remove isolated container")
+            return
+        end
+        let isolated_home: string = util::path_join(util::path_join(env_get("HOME"), constants::HOMES_DIR), pkg)
+        if !util::dir_remove_all(isolated_home) is
+            helpers::print_warn("Failed to remove isolated home dir")
+        end
+    end
+
+    let updated_installed: [InstalledPackage] = helpers_state::remove_installed(installed, pkg)
+    if !helpers_state::save_installed(updated_installed) is
+        helpers::print_error("Failed to save installed info")
+        return
+    end
+    helpers::print_success("'" + pkg + "' removed")
+end
+
+fn find_package(repo_packages: [PackageInfo], name: string) -> (bool, PackageInfo) is
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        if repo_packages[i].name == name is return (true, repo_packages[i]) end
+        i += 1
+    end
+    return (false, PackageInfo { name: "", distro: "", kind: "", libs: [] })
+end
