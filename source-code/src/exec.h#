@@ -1,0 +1,89 @@
+mod constants
+mod helpers
+mod util
+
+;; exec_command runs argv-style (bin, args) with output passed through live
+;; to the terminal — the H# analogue of exec.Command(...).Run() with
+;; Stdin/Stdout/Stderr wired to the process's own.
+pub fn exec_command(bin: string, args: [string]) -> bool is
+    return util::run_argv_status_visible(bin, args) == 0
+end
+
+;; exec_in_container runs a command inside a container.
+;; If as_root is true, the command is executed as root (UID 0) inside the
+;; container. Otherwise, it runs as the default user (the one mapped via
+;; --userns=keep-id). interactive flag adds -it for interactive commands.
+pub fn exec_in_container(cont: string, cmd_str: string, interactive: bool, as_root: bool) -> bool is
+    let mut args: [string] = ["exec"]
+    if interactive is args = array_push(args, "-it") end
+    if as_root is
+        args = array_push(args, "-u")
+        args = array_push(args, "0")
+    end
+    args = array_push(args, cont)
+    args = array_push(args, "sh")
+    args = array_push(args, "-c")
+    args = array_push(args, cmd_str)
+    return exec_command(constants::PODMAN_BIN, args)
+end
+
+;; exec_in_container_with_spinner runs a command inside a container behind a
+;; progress spinner instead of streaming its raw output directly — the
+;; package-manager chatter from `apt-get install`/`dnf install`/`pacman -S`
+;; is mostly noise for a successful install, so it's captured and only
+;; dumped to the terminal if the command actually fails (then it's exactly
+;; the debugging info you'd want). Interactive/inspection uses (like
+;; `isolator exec`) should keep using exec_in_container directly, which
+;; still streams live — hiding output behind a spinner only makes sense for
+;; "run this and tell me if it worked" steps like install/remove/init.
+;;
+;; H# has no terminal-spinner primitive in its (stubbed) std -> cli module,
+;; so this prints a static "... <label>" line instead of an animated one —
+;; same information, same "quiet unless it fails" behavior, no animation.
+pub fn exec_in_container_with_spinner(cont: string, cmd_str: string, label: string, as_root: bool) -> bool is
+    write("  " + label)
+
+    let mut args: [string] = ["exec"]
+    if as_root is
+        args = array_push(args, "-u")
+        args = array_push(args, "0")
+    end
+    args = array_push(args, cont)
+    args = array_push(args, "sh")
+    args = array_push(args, "-c")
+    args = array_push(args, cmd_str)
+
+    let cmd: string = util::shell_quote(constants::PODMAN_BIN) + " " + util::quote_argv(args)
+    let __dstr109: (int, string) = util::run_capture(cmd)
+    let rc: int = __dstr109.0
+    let output: string = __dstr109.1
+
+    if rc != 0 is
+        helpers::print_error(label + " failed")
+        if string_trim(output) != "" is
+            write(dim(output))
+        end
+        return false
+    end
+    helpers::print_success(label)
+    return true
+end
+
+;; exec_in_container_with_output runs a command and captures output.
+;; If as_root is true, runs as root. Returns (trimmed_output, ok).
+pub fn exec_in_container_with_output(cont: string, cmd_str: string, as_root: bool) -> (string, bool) is
+    let mut args: [string] = ["exec"]
+    if as_root is
+        args = array_push(args, "-u")
+        args = array_push(args, "0")
+    end
+    args = array_push(args, cont)
+    args = array_push(args, "sh")
+    args = array_push(args, "-c")
+    args = array_push(args, cmd_str)
+
+    let __dstr110: (int, string) = util::run_argv(constants::PODMAN_BIN, args)
+    let rc: int = __dstr110.0
+    let out: string = __dstr110.1
+    return (string_trim(out), rc == 0)
+end
