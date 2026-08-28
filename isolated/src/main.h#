@@ -1,0 +1,261 @@
+use "std -> env" from "env"
+
+extern dynamic [c] is
+    fn exit(code: int)
+end
+
+mod constants
+mod config
+mod helpers
+mod container
+mod envfile
+mod install
+mod remove
+mod run
+mod search
+mod info
+mod list
+mod status
+mod update
+mod refresh
+mod upgrade
+mod autoremove
+mod clean
+mod snapshot
+mod docs
+mod init
+mod help
+
+fn contains_flag(args: [string], flag: string) -> bool is
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        if args[i] == flag is return true end
+        i += 1
+    end
+    return false
+end
+
+fn positional_args(args: [string]) -> [string] is
+    ;; Everything before a lone "--" separator or a leading "--flag" token
+    ;; is treated as positional. Flags handled explicitly by each
+    ;; subcommand below are filtered out by the caller before this is
+    ;; used, matching cobra's flag/positional separation closely enough
+    ;; for this CLI's actual flag set (all boolean, no "--flag value").
+    let mut result: [string] = []
+    let n: int = array_len(args)
+    let mut i: int = 0
+    while i < n is
+        let a: string = args[i]
+        if !string_starts_with(a, "--") && a != "-v" && a != "-h" is
+            result = array_push(result, a)
+        end
+        i += 1
+    end
+    return result
+end
+
+fn main() is
+    let argv: [string] = env::args()
+    let n: int = array_len(argv)
+    ;; env::args() conventionally includes argv[0] (the binary path), like
+    ;; Go's os.Args — mirror that indexing exactly (args[1:] is "the real
+    ;; args" throughout, same as the Go original).
+    let mut args: [string] = []
+    let mut i: int = 1
+    while i < n is args = array_push(args, argv[i]) i += 1 end
+    let argc: int = array_len(args)
+
+    ;; --version, -h/--help, and bare `help` shouldn't require podman to be
+    ;; installed — someone checking "what version is this" or reading the
+    ;; help text is often doing exactly that because podman ISN'T set up
+    ;; yet.
+    let mut skip_podman_check: bool = false
+    if argc >= 1 is
+        let first: string = args[0]
+        if first == "--version" || first == "-v" || first == "version" ||
+           first == "--help" || first == "-h" || first == "help" || first == "docs" is
+            skip_podman_check = true
+        end
+    end
+    if contains_flag(args, "--help") || contains_flag(args, "-h") is
+        skip_podman_check = true
+    end
+    if !skip_podman_check is
+        let err: string = container::check_podman()
+        if err != "" is
+            helpers::print_error(err)
+            exit(1)
+        end
+    end
+
+    ;; `isolated myproject.hk` — declarative dev environment activation,
+    ;; handled before subcommand dispatch since it's not a subcommand,
+    ;; it's a positional file argument.
+    let __dstr8: (string, bool) = envfile::is_env_file(args)
+    let env_path: string = __dstr8.0
+    let is_env: bool = __dstr8.1
+    if is_env is
+        envfile::handle_env_file(env_path)
+        return
+    end
+
+    if argc == 0 is
+        help::print_colored_help()
+        return
+    end
+
+    let cmd: string = args[0]
+    let mut rest: [string] = []
+    let mut j: int = 1
+    while j < argc is rest = array_push(rest, args[j]) j += 1 end
+
+    if cmd == "--version" || cmd == "-v" || cmd == "version" is
+        write("isolated " + constants::VERSION)
+        return
+    end
+    if cmd == "--help" || cmd == "-h" || cmd == "help" is
+        help::print_colored_help()
+        return
+    end
+
+    if cmd == "install" is
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated install <pkg>")
+            exit(1)
+        end
+        ;; Unlike plain `isolator`, there is no --isolated flag here —
+        ;; isolation isn't an option, it's the entire point of this tool.
+        ;; Every install always gets its own container + home.
+        let dry_run: bool = contains_flag(rest, "--dry-run")
+        install::handle_install(pos[0], true, dry_run)
+        return
+    end
+
+    if cmd == "remove" is
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated remove <pkg>")
+            exit(1)
+        end
+        remove::handle_remove(pos[0], contains_flag(rest, "--force"), contains_flag(rest, "--dry-run"))
+        return
+    end
+
+    if cmd == "exec" is
+        if array_len(rest) < 1 is
+            write("usage: isolated exec <pkg> -- <command> [args...]")
+            exit(1)
+        end
+        let mut cmd_args: [string] = []
+        let nr: int = array_len(rest)
+        let mut k: int = 1
+        while k < nr is cmd_args = array_push(cmd_args, rest[k]) k += 1 end
+        run::handle_exec(rest[0], cmd_args)
+        return
+    end
+
+    if cmd == "snapshot" is
+        let dry_run: bool = contains_flag(rest, "--dry-run")
+        if contains_flag(rest, "--all") is
+            snapshot::handle_snapshot_all(dry_run)
+            return
+        end
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated snapshot <container> | isolated snapshot --all")
+            exit(1)
+        end
+        snapshot::handle_snapshot(pos[0], dry_run)
+        return
+    end
+
+    if cmd == "rollback" is
+        let dry_run: bool = contains_flag(rest, "--dry-run")
+        if contains_flag(rest, "--all") is
+            snapshot::handle_rollback_all(dry_run)
+            return
+        end
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated rollback <container> | isolated rollback --all")
+            exit(1)
+        end
+        snapshot::handle_rollback(pos[0], dry_run)
+        return
+    end
+
+    if cmd == "snapshots" is
+        snapshot::handle_snapshot_list()
+        return
+    end
+
+    if cmd == "search" is
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated search <term>")
+            exit(1)
+        end
+        search::handle_search(pos[0])
+        return
+    end
+
+    if cmd == "info" is
+        let pos: [string] = positional_args(rest)
+        if array_len(pos) != 1 is
+            write("usage: isolated info <pkg>")
+            exit(1)
+        end
+        info::handle_info(pos[0])
+        return
+    end
+
+    if cmd == "list" is
+        list::handle_list()
+        return
+    end
+
+    if cmd == "status" is
+        status::handle_status()
+        return
+    end
+
+    if cmd == "update" is
+        update::handle_update(contains_flag(rest, "--dry-run"))
+        return
+    end
+
+    if cmd == "refresh" is
+        refresh::handle_refresh()
+        return
+    end
+
+    if cmd == "upgrade" is
+        upgrade::handle_upgrade(contains_flag(rest, "--dry-run"))
+        return
+    end
+
+    if cmd == "autoremove" is
+        autoremove::handle_autoremove(contains_flag(rest, "--dry-run"))
+        return
+    end
+
+    if cmd == "clean" is
+        clean::handle_clean(contains_flag(rest, "--dry-run"))
+        return
+    end
+
+    if cmd == "docs" is
+        docs::handle_docs()
+        return
+    end
+
+    if cmd == "init" is
+        init::handle_init()
+        return
+    end
+
+    helpers::print_error("unknown command \"" + cmd + "\" for \"isolated\"")
+    exit(1)
+end
