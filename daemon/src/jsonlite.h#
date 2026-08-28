@@ -1,0 +1,267 @@
+mod util
+
+;; ── Value model ──────────────────────────────────────────────────────────
+;; JVal is a single dynamically-typed JSON value — a tagged union, same
+;; shape as hkfmt.h#'s HkValue. `kind` is one of:
+;; "obj" | "arr" | "str" | "num" | "bool" | "null"
+
+struct JVal is
+    pub kind:     string
+    pub str_val:  string
+    pub num_val:  f64
+    pub bool_val: bool
+    pub arr_val:  [JVal]
+    pub obj_keys: [string]
+    pub obj_vals: [JVal]
+end
+
+pub fn jl_null() -> JVal is
+    return JVal { kind: "null", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], obj_keys: [], obj_vals: [] }
+end
+
+;; ── Character classification ────────────────────────────────────────────
+
+fn is_ws(c: string) -> bool is
+    return c == " " || c == "\t" || c == "\n" || c == "\r"
+end
+
+fn is_digit(c: string) -> bool is
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" ||
+           c == "6" || c == "7" || c == "8" || c == "9"
+end
+
+fn is_number_char(c: string) -> bool is
+    return is_digit(c) || c == "." || c == "e" || c == "E" || c == "+" || c == "-"
+end
+
+fn skip_ws(s: string, i0: int) -> int is
+    let n: int = string_len(s)
+    let mut i: int = i0
+    while i < n && is_ws(string_at(s, i)) is
+        i += 1
+    end
+    return i
+end
+
+;; ── Parser (recursive descent, tuple-return style — same convention as
+;; hkfmt.h#'s expand_one_pass/resolve_string: every parse_* function
+;; returns (parsed_thing, index_just_past_it)) ────────────────────────────
+
+fn parse_jstring(s: string, i0: int) -> (string, int) is
+    let n: int = string_len(s)
+    let mut i: int = i0 + 1 ;; skip opening quote
+    let mut b: string = ""
+    while i < n && string_at(s, i) != "\"" is
+        let c: string = string_at(s, i)
+        if c == "\\" && i + 1 < n is
+            let nx: string = string_at(s, i + 1)
+            if nx == "n" is b = b + "\n" i += 2 continue end
+            if nx == "t" is b = b + "\t" i += 2 continue end
+            if nx == "r" is b = b + "\r" i += 2 continue end
+            if nx == "\"" is b = b + "\"" i += 2 continue end
+            if nx == "\\" is b = b + "\\" i += 2 continue end
+            if nx == "/" is b = b + "/" i += 2 continue end
+            if nx == "u" is
+                ;; \uXXXX — no unicode codepoint decoder is available in
+                ;; this runtime (hkfmt.h#'s own unescape_hk_string has the
+                ;; same limitation); skip the 4 hex digits rather than
+                ;; mis-render them. Fine for the field names this parser
+                ;; is actually used on (container ids/status, package
+                ;; names, error strings).
+                i += 6
+                continue
+            end
+            b = b + nx
+            i += 2
+            continue
+        end
+        b = b + c
+        i += 1
+    end
+    ;; i is at the closing quote (or at n on unterminated input).
+    return (b, i + 1)
+end
+
+fn parse_jnumber(s: string, i0: int) -> (JVal, int) is
+    let n: int = string_len(s)
+    let start: int = i0
+    let mut i: int = i0
+    if i < n && (string_at(s, i) == "-" || string_at(s, i) == "+") is i += 1 end
+    while i < n && is_number_char(string_at(s, i)) is i += 1 end
+    let numstr: string = string_slice(s, start, i)
+    let val: f64 = util::string_to_float(numstr)
+    return (JVal { kind: "num", str_val: "", num_val: val, bool_val: false, arr_val: [], obj_keys: [], obj_vals: [] }, i)
+end
+
+fn parse_obj(s: string, i0: int) -> (JVal, int) is
+    let n: int = string_len(s)
+    let mut i: int = i0 + 1 ;; skip '{'
+    let mut keys: [string] = []
+    let mut vals: [JVal] = []
+    i = skip_ws(s, i)
+    if i < n && string_at(s, i) == "}" is
+        return (JVal { kind: "obj", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], obj_keys: keys, obj_vals: vals }, i + 1)
+    end
+    let mut done: bool = false
+    while !done is
+        i = skip_ws(s, i)
+        if i >= n || string_at(s, i) != "\"" is
+            ;; malformed — stop and return whatever was parsed so far
+            ;; instead of looping forever (total function, same
+            ;; "best-effort on bad input" policy as hkfmt.h#).
+            done = true
+            continue
+        end
+        let key_r: (string, int) = parse_jstring(s, i)
+        i = key_r.1
+        let key: string = key_r.0
+        i = skip_ws(s, i)
+        if i < n && string_at(s, i) == ":" is i += 1 end
+        let val_r: (JVal, int) = parse_value(s, i)
+        i = val_r.1
+        let val: JVal = val_r.0
+        keys = array_push(keys, key)
+        vals = array_push(vals, val)
+        i = skip_ws(s, i)
+        if i < n && string_at(s, i) == "," is
+            i += 1
+        else is
+            done = true
+        end
+    end
+    i = skip_ws(s, i)
+    if i < n && string_at(s, i) == "}" is i += 1 end
+    return (JVal { kind: "obj", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], obj_keys: keys, obj_vals: vals }, i)
+end
+
+fn parse_arr(s: string, i0: int) -> (JVal, int) is
+    let n: int = string_len(s)
+    let mut i: int = i0 + 1 ;; skip '['
+    let mut items: [JVal] = []
+    i = skip_ws(s, i)
+    if i < n && string_at(s, i) == "]" is
+        return (JVal { kind: "arr", str_val: "", num_val: 0.0, bool_val: false, arr_val: items, obj_keys: [], obj_vals: [] }, i + 1)
+    end
+    let mut done: bool = false
+    while !done is
+        let val_r: (JVal, int) = parse_value(s, i)
+        i = val_r.1
+        let val: JVal = val_r.0
+        items = array_push(items, val)
+        i = skip_ws(s, i)
+        if i < n && string_at(s, i) == "," is
+            i += 1
+        else is
+            done = true
+        end
+    end
+    i = skip_ws(s, i)
+    if i < n && string_at(s, i) == "]" is i += 1 end
+    return (JVal { kind: "arr", str_val: "", num_val: 0.0, bool_val: false, arr_val: items, obj_keys: [], obj_vals: [] }, i)
+end
+
+;; parse_value: parses one JSON value starting at (whitespace-skipped)
+;; index i0. Returns (value, index_just_past_it).
+fn parse_value(s: string, i0: int) -> (JVal, int) is
+    let n: int = string_len(s)
+    let i: int = skip_ws(s, i0)
+    if i >= n is return (jl_null(), i) end
+    let c: string = string_at(s, i)
+    if c == "{" is return parse_obj(s, i) end
+    if c == "[" is return parse_arr(s, i) end
+    if c == "\"" is
+        let sr: (string, int) = parse_jstring(s, i)
+        let sr_end: int = sr.1
+        return (JVal { kind: "str", str_val: sr.0, num_val: 0.0, bool_val: false, arr_val: [], obj_keys: [], obj_vals: [] }, sr_end)
+    end
+    let rest: string = string_slice(s, i, n)
+    if string_starts_with(rest, "true") is
+        return (JVal { kind: "bool", str_val: "", num_val: 0.0, bool_val: true, arr_val: [], obj_keys: [], obj_vals: [] }, i + 4)
+    end
+    if string_starts_with(rest, "false") is
+        return (JVal { kind: "bool", str_val: "", num_val: 0.0, bool_val: false, arr_val: [], obj_keys: [], obj_vals: [] }, i + 5)
+    end
+    if string_starts_with(rest, "null") is
+        return (jl_null(), i + 4)
+    end
+    return parse_jnumber(s, i)
+end
+
+;; ── Public API (mirrors the shape of the unsupported json:: functions
+;; this module replaces, so call sites read the same way) ───────────────
+
+pub fn jl_parse(raw: string) -> JVal is
+    let r: (JVal, int) = parse_value(raw, 0)
+    return r.0
+end
+
+pub fn jl_parse_array(raw: string) -> [JVal] is
+    let v: JVal = jl_parse(raw)
+    if v.kind == "arr" is return v.arr_val end
+    let empty: [JVal] = []
+    return empty
+end
+
+fn jl_obj_index_of(v: JVal, key: string) -> int is
+    let n: int = array_len(v.obj_keys)
+    let mut i: int = 0
+    while i < n is
+        if v.obj_keys[i] == key is return i end
+        i += 1
+    end
+    return -1
+end
+
+pub fn jl_get(v: JVal, key: string) -> JVal is
+    let idx: int = jl_obj_index_of(v, key)
+    if idx < 0 is return jl_null() end
+    return v.obj_vals[idx]
+end
+
+fn format_num(n: f64) -> string is
+    let as_int: int = util::float_to_int(n)
+    if n == util::int_to_float(as_int) is return to_string(as_int) end
+    return to_string(n)
+end
+
+pub fn jl_get_str(v: JVal, key: string) -> string is
+    let f: JVal = jl_get(v, key)
+    if f.kind == "str"  is return f.str_val end
+    if f.kind == "num"  is return format_num(f.num_val) end
+    if f.kind == "bool" is return (if f.bool_val then "true" else "false") end
+    return ""
+end
+
+pub fn jl_get_int(v: JVal, key: string) -> int is
+    let f: JVal = jl_get(v, key)
+    if f.kind != "num" is return 0 end
+    return util::float_to_int(f.num_val)
+end
+
+pub fn jl_get_bool(v: JVal, key: string) -> bool is
+    let f: JVal = jl_get(v, key)
+    if f.kind != "bool" is return false end
+    return f.bool_val
+end
+
+pub fn jl_get_obj(v: JVal, key: string) -> JVal is
+    let f: JVal = jl_get(v, key)
+    if f.kind == "obj" is return f end
+    return jl_null()
+end
+
+pub fn jl_get_arr(v: JVal, key: string) -> [JVal] is
+    let f: JVal = jl_get(v, key)
+    if f.kind == "arr" is return f.arr_val end
+    let empty: [JVal] = []
+    return empty
+end
+
+pub fn jl_str_at(arr: [JVal], idx: int) -> string is
+    let n: int = array_len(arr)
+    if idx < 0 || idx >= n is return "" end
+    let v: JVal = arr[idx]
+    if v.kind == "str" is return v.str_val end
+    if v.kind == "num" is return format_num(v.num_val) end
+    return ""
+end
