@@ -1,0 +1,222 @@
+mod hkfmt
+mod distros
+mod security
+mod container
+mod exec
+mod helpers
+mod util
+mod constants
+
+pub struct EnvVarPair is
+    pub key: string
+    pub val: string
+end
+
+pub struct EnvSpec is
+    pub name:        string
+    pub distro:      string
+    pub shell:       string
+    pub packages:    [string]
+    pub env_vars:    [EnvVarPair]
+    pub file_path:   string
+    pub project_dir: string
+end
+
+fn env_container_name(name: string) -> string is
+    return "isolator-env-" + name
+end
+
+;; parse_env_file loads and validates a project environment definition.
+;; Returns ("", spec) on success, or (error, empty_spec).
+pub fn parse_env_file(path: string) -> (string, EnvSpec) is
+    ;; H# has no filepath.Abs equivalent builtin; a bare relative path works
+    ;; fine for every downstream use here (file_read, container labels), so
+    ;; this port keeps `path` as given rather than resolving it.
+    let abs: string = path
+    let __dstr100: (string, HkDocument) = hkfmt::load_hk_file(abs)
+    let err: string = __dstr100.0
+    let doc0: HkDocument = __dstr100.1
+    if err != "" is return (err, empty_env_spec()) end
+    let __dstr101: (string, HkDocument) = hkfmt::resolve_interpolations(doc0)
+    let interp_err: string = __dstr101.0
+    let doc: HkDocument = __dstr101.1
+    if interp_err != "" is return (interp_err, empty_env_spec()) end
+
+    let env: HkMap = hkfmt::hkdoc_section(doc, "environment")
+    let mut name: string = hkfmt::hk_get_string(env, "name", "")
+    if name == "" is
+        ;; Fall back to the file's base name, e.g. "dev.hk" -> "dev".
+        name = base_name_no_ext(abs)
+    end
+    let name_err: string = security::validate_package_name(name)
+    if name_err != "" is return ("[environment] -> name: " + name_err, empty_env_spec()) end
+
+    let distro: string = hkfmt::hk_get_string(env, "distro", "debian")
+    let __dstr102: (bool, Distro) = distros::lookup_distro(distro)
+    let distro_ok: bool = __dstr102.0
+    let _d: Distro = __dstr102.1
+    if !distro_ok is return ("[environment] -> distro: unknown distro \"" + distro + "\"", empty_env_spec()) end
+
+    let shell: string = hkfmt::hk_get_string(env, "shell", "bash")
+
+    let mut packages: [string] = []
+    let pkg_sec: HkMap = hkfmt::hkdoc_section(doc, "packages")
+    let pkg_keys: [string] = hkfmt::hkmap_keys(pkg_sec)
+    let np: int = array_len(pkg_keys)
+    let mut i: int = 0
+    while i < np is
+        let k: string = pkg_keys[i]
+        let kerr: string = security::validate_package_name(k)
+        if kerr != "" is return ("[packages]: " + kerr, empty_env_spec()) end
+        packages = array_push(packages, k)
+        i += 1
+    end
+
+    let mut env_vars: [EnvVarPair] = []
+    let env_sec: HkMap = hkfmt::hkdoc_section(doc, "env")
+    let env_keys: [string] = hkfmt::hkmap_keys(env_sec)
+    let ne: int = array_len(env_keys)
+    let mut j: int = 0
+    while j < ne is
+        let k: string = env_keys[j]
+        let v: HkValue = hkfmt::hkmap_get(env_sec, k)
+        if v.kind == "array" || v.kind == "map" is
+            return ("[env] -> " + k + ": value must be string-like", empty_env_spec())
+        end
+        env_vars = array_push(env_vars, EnvVarPair { key: k, val: hkfmt::hk_as_string(v) })
+        j += 1
+    end
+
+    return ("", EnvSpec {
+        name: name, distro: distro, shell: shell,
+        packages: packages, env_vars: env_vars,
+        file_path: abs, project_dir: dir_name(abs),
+    })
+end
+
+fn empty_env_spec() -> EnvSpec is
+    return EnvSpec { name: "", distro: "", shell: "", packages: [], env_vars: [], file_path: "", project_dir: "" }
+end
+
+fn base_name_no_ext(path: string) -> string is
+    let slash: int = string_rfind(path, "/")
+    let base: string = if slash >= 0 then string_slice(path, slash + 1, string_len(path)) else path 
+    let dot: int = string_rfind(base, ".")
+    if dot > 0 is return string_slice(base, 0, dot) end
+    return base
+end
+
+fn dir_name(path: string) -> string is
+    let slash: int = string_rfind(path, "/")
+    if slash < 0 is return "." end
+    if slash == 0 is return "/" end
+    return string_slice(path, 0, slash)
+end
+
+;; handle_env_file builds (if needed) and activates the environment
+;; described by an .hk file, dropping the user into an interactive shell
+;; inside it.
+pub fn handle_env_file(path: string) is
+    let __dstr103: (string, EnvSpec) = parse_env_file(path)
+    let err: string = __dstr103.0
+    let spec: EnvSpec = __dstr103.1
+    if err != "" is
+        helpers::print_error("Failed to parse environment file: " + err)
+        return
+    end
+
+    let __dstr104: (bool, Distro) = distros::lookup_distro(spec.distro)
+    let _ok: bool = __dstr104.0
+    let d: Distro = __dstr104.1
+    let cont_name: string = env_container_name(spec.name)
+
+    helpers::print_info("Environment " + bold(spec.name) + "  [distro: " + cyan(spec.distro) + " | project: " + dim(spec.project_dir) + "]")
+
+    let first_build: bool = !container::container_exists(cont_name)
+    if first_build is
+        helpers::print_step("Creating environment container (bind-mounted to your project dir)...")
+        if !container::create_container(cont_name, d.image, spec.project_dir, "cli", d.init_system) is
+            helpers::print_error("Failed to create environment container '" + cont_name + "'")
+            return
+        end
+        if !container::init_container(cont_name, d) is
+            helpers::print_warn("Package manager init returned non-zero (may be OK for some distros)")
+        end
+    else if !container::ensure_container_running(cont_name) is
+        helpers::print_error("Failed to start environment container '" + cont_name + "'")
+        return
+    end
+
+    if array_len(spec.packages) > 0 is
+        let installed: [string] = installed_in_env(cont_name)
+        let mut missing: [string] = []
+        let np: int = array_len(spec.packages)
+        let mut i: int = 0
+        while i < np is
+            let p: string = spec.packages[i]
+            if !util::array_contains_string(installed, p) is missing = array_push(missing, p) end
+            i += 1
+        end
+        if array_len(missing) > 0 is
+            helpers::print_info("Installing: " + util::string_join(missing, ", "))
+            let cmd: string = distros::adapter_install(spec.distro) + " " + util::string_join(missing, " ")
+            if !exec::exec_in_container(cont_name, cmd, false, true) is
+                helpers::print_error("Failed to install one or more packages into the environment")
+                return
+            end
+            mark_installed_in_env(cont_name, spec.packages)
+        else is
+            helpers::print_info("All packages already present — activating instantly")
+        end
+    end
+
+    helpers::print_success("Environment '" + spec.name + "' ready. Activating shell...")
+
+    let mut args: [string] = ["exec", "-it", "--workdir", "/home/user"]
+    let nv: int = array_len(spec.env_vars)
+    let mut k: int = 0
+    while k < nv is
+        args = array_push(args, "--env")
+        args = array_push(args, spec.env_vars[k].key + "=" + spec.env_vars[k].val)
+        k += 1
+    end
+    args = array_push(args, cont_name)
+    args = array_push(args, spec.shell)
+    exec::exec_command(constants::PODMAN_BIN, args)
+end
+
+;; installed_in_env reads the small marker file the environment writes
+;; inside the container after a successful install batch, to avoid
+;; re-running the package manager (and re-downloading everything) on every
+;; activation.
+fn installed_in_env(cont: string) -> [string] is
+    let __dstr105: (string, bool) = exec::exec_in_container_with_output(cont, "cat /etc/isolator-env-installed 2>/dev/null", false)
+    let out: string = __dstr105.0
+    let ok: bool = __dstr105.1
+    let mut result: [string] = []
+    if !ok || out == "" is return result end
+    let lines: [string] = string_split(out, "\n")
+    let n: int = array_len(lines)
+    let mut i: int = 0
+    while i < n is
+        let l: string = string_trim(lines[i])
+        if l != "" is result = array_push(result, l) end
+        i += 1
+    end
+    return result
+end
+
+fn mark_installed_in_env(cont: string, packages: [string]) is
+    let content: string = util::string_join(packages, "\\n")
+    exec::exec_in_container(cont, "printf '%b' \"" + content + "\" > /etc/isolator-env-installed", false, false)
+end
+
+;; is_env_file reports whether args look like `isolator <something>.hk`
+;; rather than a known subcommand — used by main.h# to route bare .hk files.
+;; Returns (path, true) or ("", false).
+pub fn is_env_file(args: [string]) -> (string, bool) is
+    if array_len(args) != 1 is return ("", false) end
+    if !string_ends_with(args[0], ".hk") is return ("", false) end
+    if !file_exists(args[0]) is return ("", false) end
+    return (args[0], true)
+end
