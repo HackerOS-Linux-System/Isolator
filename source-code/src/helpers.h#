@@ -1,0 +1,34 @@
+mod constants
+mod util
+
+pub fn print_error(msg: string) is
+    write(bold(red("✗ Error: ")) + msg)
+end
+
+pub fn print_info(msg: string) is
+    write(bold(cyan("● ")) + msg)
+end
+
+pub fn print_success(msg: string) is
+    write(bold(green("✓ ")) + msg)
+end
+
+pub fn print_warn(msg: string) is
+    write(bold(yellow("⚠ ")) + msg)
+end
+
+pub fn print_step(msg: string) is
+    write(bold(cyan("→ ")) + msg)
+end
+
+pub fn config_path(file: string) -> string is
+    return util::path_join(util::path_join(util::home_dir(), constants::CONFIG_DIR), file)
+end
+
+pub fn get_repo_file_path() -> string is
+    return config_path(constants::REPO_FILE)
+end
+
+pub fn ensure_config_dir() -> bool is
+    return util::dir_create_all(util::path_join(util::home_dir(), constants::CONFIG_DIR))
+end
