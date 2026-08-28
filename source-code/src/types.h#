@@ -1,0 +1,27 @@
+pub struct PackageInfo is
+    pub name:   string
+    pub distro: string
+    pub kind:   string       ;; "type" is a reserved-ish word in many langs; "kind" mirrors Go's `Type` field
+    pub libs:   [string]
+end
+
+pub struct InstalledPackage is
+    pub pkg:      string
+    pub cont:     string
+    pub distro:   string
+    pub kind:     string
+    pub isolated: bool
+    ;; Requires holds the names of Libs entries that were recognized as
+    ;; first-class catalog packages (type == "lib") at install time — see
+    ;; classify_libs in deps.h#. Plain raw distro-package-manager lib names
+    ;; aren't tracked here since Isolator has no independent object for them.
+    pub requires: [string]
+end
+
+pub struct ContainerInfo is
+    pub id:     string
+    pub names:  [string]
+    pub state:  string
+    pub status: string
+    pub size:   string       ;; e.g. "123MB (virtual 456MB)"
+end
