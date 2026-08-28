@@ -1,0 +1,248 @@
+mod hkfmt
+mod helpers
+mod util
+
+;; ── Schema ───────────────────────────────────────────────────────────────────
+;; configSchema declares every key Isolator actually understands in
+;; config.hk, per section, and what shape its value should be. Used by
+;; validate_config_doc so a typo'd key or a wrong-shaped value produces a
+;; clear warning instead of silently and invisibly falling back to the
+;; default.
+;;
+;; Represented as flat arrays of (section, key, kind) triples instead of a
+;; nested map-of-maps, since it's only ever iterated, never looked up by key.
+;; kind is "bool" | "string" | "enum:a,b,c".
+
+struct SchemaEntry is
+    pub section: string
+    pub key:     string
+    pub kind:    string
+end
+
+fn config_schema() -> [SchemaEntry] is
+    return [
+        SchemaEntry { section: "general", key: "default_isolated", kind: "bool" },
+
+        SchemaEntry { section: "gui", key: "enable",                     kind: "bool" },
+        SchemaEntry { section: "gui", key: "gpu_mode",                   kind: "enum:auto,nvidia,amd,intel,none" },
+        SchemaEntry { section: "gui", key: "audio_backend",              kind: "enum:auto,pipewire,pulseaudio,alsa,none" },
+        SchemaEntry { section: "gui", key: "gtk_theme",                  kind: "string" },
+        SchemaEntry { section: "gui", key: "icon_theme",                 kind: "string" },
+        SchemaEntry { section: "gui", key: "qt_platform",                kind: "string" },
+        SchemaEntry { section: "gui", key: "shm_size",                   kind: "string" },
+        SchemaEntry { section: "gui", key: "create_desktop_entries",     kind: "bool" },
+        SchemaEntry { section: "gui", key: "allow_desktop_environments", kind: "bool" },
+        SchemaEntry { section: "gui", key: "allow_system_containers",    kind: "bool" },
+
+        SchemaEntry { section: "security", key: "require_checksum", kind: "bool" },
+    ]
+end
+
+fn schema_sections() -> [string] is
+    return ["general", "gui", "security"]
+end
+
+;; validate_config_doc checks doc against config_schema and returns one
+;; human-readable warning per problem found: unknown sections, unknown keys
+;; within a known section (the classic typo case), and values whose shape
+;; doesn't match what's expected. It never mutates doc — LoadConfig prints
+;; these and moves on, falling back to defaults for anything invalid.
+pub fn validate_config_doc(doc: HkDocument) -> [string] is
+    let mut warnings: [string] = []
+    let sections: [string] = hkfmt::hkmap_keys(doc.sections)
+    let schema: [SchemaEntry] = config_schema()
+    let known_sections: [string] = schema_sections()
+
+    let ns: int = array_len(sections)
+    let mut si: int = 0
+    while si < ns is
+        let sec_name: string = sections[si]
+        si += 1
+        if !util::array_contains_string(known_sections, sec_name) is
+            warnings = array_push(warnings, "unknown config section [" + sec_name + "] — ignored")
+            continue
+        end
+        let sec_val: HkValue = hkfmt::hkmap_get(doc.sections, sec_name)
+        if sec_val.kind != "map" is continue end
+
+        let keys: [string] = hkfmt::hkmap_keys(sec_val.map_val)
+        let nk: int = array_len(keys)
+        let mut ki: int = 0
+        while ki < nk is
+            let key: string = keys[ki]
+            ki += 1
+            let entry: (bool, string) = schema_lookup(schema, sec_name, key)
+            let known: bool = entry.0
+            let kind: string = entry.1
+            if !known is
+                warnings = array_push(warnings, "unknown config key '" + key + "' in [" + sec_name + "] — ignored (typo?)")
+                continue
+            end
+            let v: HkValue = hkfmt::hkmap_get(sec_val.map_val, key)
+            if kind == "bool" is
+                if v.kind != "bool" is
+                    warnings = array_push(warnings, "[" + sec_name + "] -> " + key + " should be true/false, got " + hk_kind_name(v.kind) + " — using default")
+                end
+            else if kind == "string" is
+                if v.kind != "string" is
+                    warnings = array_push(warnings, "[" + sec_name + "] -> " + key + " should be a plain string, got " + hk_kind_name(v.kind) + " — using default")
+                end
+            else if string_starts_with(kind, "enum:") is
+                let options: [string] = string_split(string_slice(kind, 5, string_len(kind)), ",")
+                let s: string = hkfmt::hk_as_string(v)
+                if v.kind == "array" || v.kind == "map" || !util::array_contains_string(options, s) is
+                    warnings = array_push(warnings, "[" + sec_name + "] -> " + key + " should be one of " + util::string_join(options, "|") + ", got \"" + s + "\" — using default")
+                end
+            end
+        end
+    end
+    return warnings
+end
+
+fn schema_lookup(schema: [SchemaEntry], section: string, key: string) -> (bool, string) is
+    let n: int = array_len(schema)
+    let mut i: int = 0
+    while i < n is
+        let e: SchemaEntry = schema[i]
+        if e.section == section && e.key == key is return (true, e.kind) end
+        i += 1
+    end
+    return (false, "")
+end
+
+fn hk_kind_name(k: string) -> string is
+    if k == "string" is return "a string" end
+    if k == "number" is return "a number" end
+    if k == "bool"   is return "a bool" end
+    if k == "array"  is return "an array" end
+    if k == "map"    is return "a map" end
+    return "an unknown type"
+end
+
+;; ── Config ───────────────────────────────────────────────────────────────────
+;; Config holds user-tunable behaviour, persisted at
+;; ~/.config/isolator/config.hk (the .hk format — see hkfmt.h# — replaces
+;; JSON/YAML for every local Isolator config/state file).
+
+pub struct Config is
+    pub default_isolated: bool
+
+    ;; --- Graphics / desktop integration ---
+    pub enable_gui:                 bool
+    pub gpu_mode:                   string   ;; "auto" | "nvidia" | "amd" | "intel" | "none"
+    pub audio_backend:              string   ;; "auto" | "pipewire" | "pulseaudio" | "alsa" | "none"
+    pub gtk_theme:                  string
+    pub icon_theme:                 string
+    pub qt_platform:                string
+    pub shm_size:                   string
+    pub create_desktop_entries:     bool
+    pub allow_desktop_environments: bool
+    pub allow_system_containers:    bool
+
+    ;; --- Safety ---
+    pub require_checksum: bool
+end
+
+pub fn default_config() -> Config is
+    return Config {
+        default_isolated: false,
+        enable_gui: true,
+        gpu_mode: "auto",
+        audio_backend: "auto",
+        gtk_theme: "",
+        icon_theme: "",
+        qt_platform: "gtk3",
+        shm_size: "1g",
+        create_desktop_entries: true,
+        allow_desktop_environments: false,
+        allow_system_containers: false,
+        require_checksum: false,
+    }
+end
+
+pub fn config_file_path() -> string is
+    return helpers::config_path("config.hk")
+end
+
+;; load_config reads config.hk, creating it with defaults if missing or
+;; unreadable. It never fails the caller — worst case it returns defaults.
+pub fn load_config() -> Config is
+    let mut cfg: Config = default_config()
+    if !helpers::ensure_config_dir() is return cfg end
+    let path: string = config_file_path()
+    if !file_exists(path) is
+        save_config(cfg)
+        return cfg
+    end
+    let __dstr52: (string, HkDocument) = hkfmt::load_hk_file(path)
+    let err: string = __dstr52.0
+    let doc0: HkDocument = __dstr52.1
+    if err != "" is
+        helpers::print_warn("Config file is corrupted (" + err + "), using defaults — run 'isolator init' to reset it")
+        return cfg
+    end
+    let __dstr53: (string, HkDocument) = hkfmt::resolve_interpolations(doc0)
+    let interp_err: string = __dstr53.0
+    let doc: HkDocument = __dstr53.1
+    if interp_err != "" is
+        helpers::print_warn("Config interpolation error: " + interp_err)
+    end
+    let warnings: [string] = validate_config_doc(doc)
+    let nw: int = array_len(warnings)
+    let mut wi: int = 0
+    while wi < nw is
+        helpers::print_warn("config.hk: " + warnings[wi])
+        wi += 1
+    end
+
+    let general: HkMap = hkfmt::hkdoc_section(doc, "general")
+    cfg.default_isolated = hkfmt::hk_get_bool(general, "default_isolated", cfg.default_isolated)
+
+    let gui: HkMap = hkfmt::hkdoc_section(doc, "gui")
+    cfg.enable_gui = hkfmt::hk_get_bool(gui, "enable", cfg.enable_gui)
+    cfg.gpu_mode = hkfmt::hk_get_string(gui, "gpu_mode", cfg.gpu_mode)
+    cfg.audio_backend = hkfmt::hk_get_string(gui, "audio_backend", cfg.audio_backend)
+    cfg.gtk_theme = hkfmt::hk_get_string(gui, "gtk_theme", cfg.gtk_theme)
+    cfg.icon_theme = hkfmt::hk_get_string(gui, "icon_theme", cfg.icon_theme)
+    cfg.qt_platform = hkfmt::hk_get_string(gui, "qt_platform", cfg.qt_platform)
+    cfg.shm_size = hkfmt::hk_get_string(gui, "shm_size", cfg.shm_size)
+    cfg.create_desktop_entries = hkfmt::hk_get_bool(gui, "create_desktop_entries", cfg.create_desktop_entries)
+    cfg.allow_desktop_environments = hkfmt::hk_get_bool(gui, "allow_desktop_environments", cfg.allow_desktop_environments)
+    cfg.allow_system_containers = hkfmt::hk_get_bool(gui, "allow_system_containers", cfg.allow_system_containers)
+
+    let security: HkMap = hkfmt::hkdoc_section(doc, "security")
+    cfg.require_checksum = hkfmt::hk_get_bool(security, "require_checksum", cfg.require_checksum)
+
+    return cfg
+end
+
+;; save_config writes cfg to config.hk (atomically, via hkfmt::write_hk_file).
+pub fn save_config(cfg: Config) -> bool is
+    if !helpers::ensure_config_dir() is return false end
+
+    let mut doc: HkDocument = hkfmt::new_hkdocument()
+
+    let mut general: HkMap = hkfmt::new_hkmap()
+    general = hkfmt::hkmap_set(general, "default_isolated", hkfmt::hk_bool_v(cfg.default_isolated))
+    doc = hkfmt::hkdoc_set_section(doc, "general", general)
+
+    let mut gui: HkMap = hkfmt::new_hkmap()
+    gui = hkfmt::hkmap_set(gui, "enable", hkfmt::hk_bool_v(cfg.enable_gui))
+    gui = hkfmt::hkmap_set(gui, "gpu_mode", hkfmt::hk_str(cfg.gpu_mode))
+    gui = hkfmt::hkmap_set(gui, "audio_backend", hkfmt::hk_str(cfg.audio_backend))
+    gui = hkfmt::hkmap_set(gui, "gtk_theme", hkfmt::hk_str(cfg.gtk_theme))
+    gui = hkfmt::hkmap_set(gui, "icon_theme", hkfmt::hk_str(cfg.icon_theme))
+    gui = hkfmt::hkmap_set(gui, "qt_platform", hkfmt::hk_str(cfg.qt_platform))
+    gui = hkfmt::hkmap_set(gui, "shm_size", hkfmt::hk_str(cfg.shm_size))
+    gui = hkfmt::hkmap_set(gui, "create_desktop_entries", hkfmt::hk_bool_v(cfg.create_desktop_entries))
+    gui = hkfmt::hkmap_set(gui, "allow_desktop_environments", hkfmt::hk_bool_v(cfg.allow_desktop_environments))
+    gui = hkfmt::hkmap_set(gui, "allow_system_containers", hkfmt::hk_bool_v(cfg.allow_system_containers))
+    doc = hkfmt::hkdoc_set_section(doc, "gui", gui)
+
+    let mut security: HkMap = hkfmt::new_hkmap()
+    security = hkfmt::hkmap_set(security, "require_checksum", hkfmt::hk_bool_v(cfg.require_checksum))
+    doc = hkfmt::hkdoc_set_section(doc, "security", security)
+
+    hkfmt::write_hk_file(config_file_path(), doc)
+    return true
+end
