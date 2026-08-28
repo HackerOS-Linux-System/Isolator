@@ -1,0 +1,122 @@
+mod hkfmt
+mod helpers
+mod constants
+mod types
+
+pub fn load_installed() -> [InstalledPackage] is
+    if !helpers::ensure_config_dir() is
+        let __empty1: [InstalledPackage] = []
+        return __empty1
+    end
+    let path: string = helpers::config_path(constants::INSTALLED_FILE)
+    if !file_exists(path) is
+        let __empty2: [InstalledPackage] = []
+        return __empty2
+    end
+    let __dstr106: (string, HkDocument) = hkfmt::load_hk_file(path)
+    let err: string = __dstr106.0
+    let doc: HkDocument = __dstr106.1
+    if err != "" is
+        let __empty3: [InstalledPackage] = []
+        return __empty3
+    end
+
+    let pkgs: HkMap = hkfmt::hkdoc_section(doc, "packages")
+    let names: [string] = hkfmt::hkmap_keys(pkgs)
+    let mut installed: [InstalledPackage] = []
+    let n: int = array_len(names)
+    let mut i: int = 0
+    while i < n is
+        let name: string = names[i]
+        let v: HkValue = hkfmt::hkmap_get(pkgs, name)
+        if v.kind == "map" is
+            let m: HkMap = v.map_val
+            let mut requires: [string] = []
+            if hkfmt::hkmap_has(m, "requires") is
+                let rv: HkValue = hkfmt::hkmap_get(m, "requires")
+                if rv.kind == "array" is
+                    let arr: [HkValue] = rv.arr_val
+                    let na: int = array_len(arr)
+                    let mut j: int = 0
+                    while j < na is
+                        if arr[j].kind == "string" is
+                            requires = array_push(requires, arr[j].str_val)
+                        end
+                        j += 1
+                    end
+                end
+            end
+            installed = array_push(installed, InstalledPackage {
+                pkg: name,
+                cont: hkfmt::hk_get_string(m, "container", ""),
+                distro: hkfmt::hk_get_string(m, "distro", ""),
+                kind: hkfmt::hk_get_string(m, "type", "cli"),
+                isolated: hkfmt::hk_get_bool(m, "isolated", false),
+                requires: requires,
+            })
+        end
+        i += 1
+    end
+    return installed
+end
+
+pub fn save_installed(installed: [InstalledPackage]) -> bool is
+    let mut doc: HkDocument = hkfmt::new_hkdocument()
+    let mut pkgs: HkMap = hkfmt::new_hkmap()
+
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        let ip: InstalledPackage = installed[i]
+        let mut m: HkMap = hkfmt::new_hkmap()
+        m = hkfmt::hkmap_set(m, "container", hkfmt::hk_str(ip.cont))
+        m = hkfmt::hkmap_set(m, "distro", hkfmt::hk_str(ip.distro))
+        m = hkfmt::hkmap_set(m, "type", hkfmt::hk_str(ip.kind))
+        m = hkfmt::hkmap_set(m, "isolated", hkfmt::hk_bool_v(ip.isolated))
+        if array_len(ip.requires) > 0 is
+            let mut arr: [HkValue] = []
+            let nr: int = array_len(ip.requires)
+            let mut j: int = 0
+            while j < nr is
+                arr = array_push(arr, hkfmt::hk_str(ip.requires[j]))
+                j += 1
+            end
+            m = hkfmt::hkmap_set(m, "requires", hkfmt::hk_arr(arr))
+        end
+        pkgs = hkfmt::hkmap_set(pkgs, ip.pkg, hkfmt::hk_map_v(m))
+        i += 1
+    end
+    doc = hkfmt::hkdoc_set_section(doc, "packages", pkgs)
+    hkfmt::write_hk_file(helpers::config_path(constants::INSTALLED_FILE), doc)
+    return true
+end
+
+;; find_installed returns (found, InstalledPackage) for `name`.
+pub fn find_installed(installed: [InstalledPackage], name: string) -> (bool, InstalledPackage) is
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        if installed[i].pkg == name is return (true, installed[i]) end
+        i += 1
+    end
+    return (false, InstalledPackage { pkg: "", cont: "", distro: "", kind: "", isolated: false, requires: [] })
+end
+
+pub fn is_installed(installed: [InstalledPackage], name: string) -> bool is
+    let __dstr107: (bool, InstalledPackage) = find_installed(installed, name)
+    let found: bool = __dstr107.0
+    let _p: InstalledPackage = __dstr107.1
+    return found
+end
+
+;; remove_installed returns a new slice without the entry named `name`.
+pub fn remove_installed(installed: [InstalledPackage], name: string) -> [InstalledPackage] is
+    let mut result: [InstalledPackage] = []
+    let n: int = array_len(installed)
+    let mut i: int = 0
+    while i < n is
+        if installed[i].pkg != name is result = array_push(result, installed[i]) end
+        i += 1
+    end
+    return result
+end
