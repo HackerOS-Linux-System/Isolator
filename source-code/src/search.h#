@@ -1,0 +1,183 @@
+mod repo
+mod helpers
+mod tui
+mod util
+mod types
+
+fn search_columns() -> [TableColumn] is
+    return [
+        TableColumn { title: "Name",         width: 24 },
+        TableColumn { title: "Distro",       width: 14 },
+        TableColumn { title: "Type",         width: 6 },
+        TableColumn { title: "Dependencies", width: 34 },
+    ]
+end
+
+;; fuzzy_score returns (matched, score) — higher score = better match.
+;; Matched is true iff every character of term (case-insensitive) appears
+;; in candidate in order.
+fn fuzzy_score(term: string, candidate: string) -> (bool, int) is
+    let t: string = string_to_lower(term)
+    let c: string = string_to_lower(candidate)
+    let tn: int = string_len(t)
+    let cn: int = string_len(c)
+    if tn == 0 is return (true, 0) end
+
+    let mut ti: int = 0
+    let mut ci: int = 0
+    let mut first_match: int = -1
+    let mut last_match: int = -1
+    let mut consecutive: int = 0
+    let mut max_consecutive: int = 0
+    let mut prev_match: int = -1
+
+    while ci < cn && ti < tn is
+        if string_at(c, ci) == string_at(t, ti) is
+            if first_match < 0 is first_match = ci end
+            last_match = ci
+            if prev_match >= 0 && ci == prev_match + 1 is
+                consecutive += 1
+            else is
+                consecutive = 1
+            end
+            if consecutive > max_consecutive is max_consecutive = consecutive end
+            prev_match = ci
+            ti += 1
+        end
+        ci += 1
+    end
+
+    if ti < tn is return (false, 0) end
+
+    ;; Reward: tighter span, more consecutive runs, earlier start.
+    let span: int = last_match - first_match + 1
+    let mut score: int = 1000 - span - first_match + (max_consecutive * 10)
+    if c == t is score = score + 500 end
+    if string_starts_with(c, t) is score = score + 200 end
+    return (true, score)
+end
+
+pub fn handle_search(term: string) is
+    if !repo::load_repo(false) is return end
+    let repo_packages: [PackageInfo] = repo::read_repo_packages()
+    let columns: [TableColumn] = search_columns()
+
+    if string_to_lower(term) == "all" is
+        let sorted: [PackageInfo] = sort_packages(repo_packages)
+        let rows: [TableRow] = to_rows(sorted)
+        helpers::print_info(to_string(array_len(rows)) + " package(s) in the repository")
+        tui::run_table("All packages", columns, rows)
+        return
+    end
+
+    let mut matched: [PackageInfo] = []
+    let mut scores:  [int]         = []
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        let p: PackageInfo = repo_packages[i]
+        let __dstr89: (bool, int) = fuzzy_score(term, p.name)
+        let found: bool = __dstr89.0
+        let score: int = __dstr89.1
+        if found is
+            matched = array_push(matched, p)
+            scores  = array_push(scores, score)
+        end
+        i += 1
+    end
+
+    let mut rows: [TableRow] = []
+    if array_len(matched) > 0 is
+        let ranked: [PackageInfo] = rank_by_score(matched, scores)
+        rows = to_rows(ranked)
+    else is
+        ;; Fuzzy scoring found nothing (e.g. very short/odd query) — fall
+        ;; back to plain substring matching so we never under-deliver
+        ;; compared to the old behaviour.
+        let lower_term: string = string_to_lower(term)
+        let mut j: int = 0
+        while j < n is
+            let p: PackageInfo = repo_packages[j]
+            if string_contains(string_to_lower(p.name), lower_term) is
+                rows = array_push(rows, to_row(p))
+            end
+            j += 1
+        end
+    end
+
+    if array_len(rows) == 0 is
+        helpers::print_error("No packages matching '" + term + "'")
+        return
+    end
+    helpers::print_info("Found " + to_string(array_len(rows)) + " result(s) for '" + term + "'")
+    tui::run_table("Search: " + term, columns, rows)
+end
+
+fn to_row(p: PackageInfo) -> TableRow is
+    return TableRow { cells: [p.name, p.distro, p.kind, util::string_join(p.libs, ", ")] }
+end
+
+fn to_rows(pkgs: [PackageInfo]) -> [TableRow] is
+    let mut rows: [TableRow] = []
+    let n: int = array_len(pkgs)
+    let mut i: int = 0
+    while i < n is
+        rows = array_push(rows, to_row(pkgs[i]))
+        i += 1
+    end
+    return rows
+end
+
+;; sort_packages: stable-ish selection sort by (distro, name) — small
+;; catalogs, simplicity over algorithmic sophistication is fine here.
+fn sort_packages(pkgs: [PackageInfo]) -> [PackageInfo] is
+    let mut arr: [PackageInfo] = pkgs
+    let n: int = array_len(arr)
+    let mut i: int = 0
+    while i < n is
+        let mut min_idx: int = i
+        let mut j: int = i + 1
+        while j < n is
+            if pkg_less(arr[j], arr[min_idx]) is min_idx = j end
+            j += 1
+        end
+        if min_idx != i is
+            let tmp: PackageInfo = arr[i]
+            arr[i] = arr[min_idx]
+            arr[min_idx] = tmp
+        end
+        i += 1
+    end
+    return arr
+end
+
+fn pkg_less(a: PackageInfo, b: PackageInfo) -> bool is
+    if a.distro != b.distro is return a.distro < b.distro end
+    return a.name < b.name
+end
+
+;; rank_by_score: selection sort by descending score.
+fn rank_by_score(pkgs: [PackageInfo], scores: [int]) -> [PackageInfo] is
+    let mut arr: [PackageInfo] = pkgs
+    let mut sc: [int] = scores
+    let n: int = array_len(arr)
+    let mut i: int = 0
+    while i < n is
+        let mut max_idx: int = i
+        let mut j: int = i + 1
+        while j < n is
+            if sc[j] > sc[max_idx] is max_idx = j end
+            j += 1
+        end
+        if max_idx != i is
+            let tmp_p: PackageInfo = arr[i]
+            arr[i] = arr[max_idx]
+            arr[max_idx] = tmp_p
+            let tmp_s: int = sc[i]
+            sc[i] = sc[max_idx]
+            sc[max_idx] = tmp_s
+        end
+        i += 1
+    end
+    return arr
+end
