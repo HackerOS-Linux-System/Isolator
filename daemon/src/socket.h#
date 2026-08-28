@@ -1,9 +1,12 @@
-use "std -> json" from "json"
-
 mod util
 mod scheduler
 mod config
 mod log
+;; FIX: `std -> json`'s get_bool has no working backend on this compiler
+;; (undefined fn at codegen time — see jsonlite.h#'s doc comment for the
+;; full story). jsonlite.h# is a real JSON parser that actually works,
+;; used below instead.
+mod jsonlite
 
 fn requests_dir(socket_path: string) -> string is
     return socket_path + ".d"
@@ -46,20 +49,22 @@ pub fn poll_and_serve(s0: Scheduler, socket_path: string, started_at_ms: int) ->
 end
 
 fn handle_request(s: Scheduler, raw: string, started_at_ms: int) -> string is
-    let req: any = json::parse(raw)
-    if req == nil is
-        return error_response("invalid JSON")
-    end
-    let action: string = json::get_str(req, "action")
+    let req: jsonlite::JVal = jsonlite::jl_parse(raw)
+    let action: string = jsonlite::jl_get_str(req, "action")
 
     if action == "status" is
         return status_response(s, started_at_ms)
     end
     if action == "trigger" is
-        let task: string = json::get_str(req, "task")
-        let dry_run: bool = json::get_bool(req, "dry_run")
+        let task: string = jsonlite::jl_get_str(req, "task")
+        let dry_run: bool = jsonlite::jl_get_bool(req, "dry_run")
         let err: string = scheduler::trigger_now(task, dry_run)
         if err != "" is return error_response(err) end
+        ;; BUG FIX: this was "{{\"ok\":true}}" — doubled braces, which
+        ;; produced the literal text `{{"ok":true}}` (invalid JSON)
+        ;; instead of `{"ok":true}`. query_daemon's own
+        ;; json::get_bool(obj, "ok")-equivalent call on this string could
+        ;; never have found "ok" at the top level of that malformed body.
         return "{\"ok\":true}"
     end
     return error_response("unknown action " + action)
@@ -132,9 +137,9 @@ pub fn query_daemon(socket_path: string, action: string, task: string, dry_run: 
         if file_exists(resp_path) is
             let body: string = file_read(resp_path)
             file_delete(resp_path)
-            let obj: any = json::parse(body)
-            let ok: bool = json::get_bool(obj, "ok")
-            let err: string = json::get_str(obj, "error")
+            let obj: jsonlite::JVal = jsonlite::jl_parse(body)
+            let ok: bool = jsonlite::jl_get_bool(obj, "ok")
+            let err: string = jsonlite::jl_get_str(obj, "error")
             return QueryResult { ok: ok, reached: true, error: err, body: body }
         end
         util::sleep_secs(1)
