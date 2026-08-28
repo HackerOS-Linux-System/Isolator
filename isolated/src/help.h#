@@ -1,0 +1,79 @@
+struct CmdHelp is
+    pub name: string
+    pub args: string
+    pub desc: string
+end
+
+fn help_commands() -> [CmdHelp] is
+    return [
+        CmdHelp { name: "init",       args: "",                 desc: "First-run setup: config, PATH check, GPU/audio detection" },
+        CmdHelp { name: "install",    args: "<pkg>",             desc: "Install a package into a Podman container" },
+        CmdHelp { name: "remove",     args: "<pkg>",             desc: "Remove an installed package" },
+        CmdHelp { name: "exec",       args: "<pkg> -- <cmd>",    desc: "Run an arbitrary command inside a package's container" },
+        CmdHelp { name: "search",     args: "<term>",            desc: "Fuzzy-search the repository for packages" },
+        CmdHelp { name: "info",       args: "<pkg>",             desc: "Show detailed info about a package" },
+        CmdHelp { name: "list",       args: "",                  desc: "List all installed packages" },
+        CmdHelp { name: "status",     args: "",                  desc: "Show container status dashboard" },
+        CmdHelp { name: "update",     args: "",                  desc: "Update packages in all managed containers" },
+        CmdHelp { name: "refresh",    args: "",                  desc: "Force re-download of the repository list" },
+        CmdHelp { name: "upgrade",    args: "",                  desc: "Full system upgrade (host + containers)" },
+        CmdHelp { name: "autoremove", args: "",                  desc: "Remove orphaned containers with no packages left" },
+        CmdHelp { name: "clean",      args: "",                  desc: "Prune dangling Podman images and build cache" },
+        CmdHelp { name: "snapshot",   args: "<container>",       desc: "Save a rollback point for a container" },
+        CmdHelp { name: "rollback",   args: "<container>",       desc: "Restore a container from its latest snapshot" },
+        CmdHelp { name: "snapshots",  args: "",                  desc: "List saved snapshots" },
+    ]
+end
+
+pub fn print_colored_help() is
+    write("")
+    write(bold(cyan("  Isolated — Podman Package Manager (always-isolated)  ")))
+    write("")
+    write(bold("  Usage"))
+    write("    " + cyan("isolated") + " " + dim("<command> [flags]"))
+    write("")
+    write(bold("  Commands"))
+
+    let cmds: [CmdHelp] = help_commands()
+    let n: int = array_len(cmds)
+    let mut i: int = 0
+    while i < n is
+        let c: CmdHelp = cmds[i]
+        let mut args_str: string = ""
+        if c.args != "" is args_str = " " + dim(c.args) end
+        write("    " + bold(c.name) + args_str)
+        write("      " + dim(c.desc))
+        write("")
+        i += 1
+    end
+
+    write(bold("  Flags"))
+    write("    " + dim("(note)") + "   every install is isolated by default — there's no --isolated flag here")
+    write("    " + yellow("--force") + "        remove even if another installed package depends on it")
+    write("")
+    write(bold("  Config"))
+    write("    " + dim("~/.config/isolated/config.hk — GPU mode, audio backend, themes,"))
+    write("    " + dim("desktop-launcher creation, checksum enforcement, and more."))
+    write("")
+    write(bold("  Examples"))
+    let examples: [string] = [
+        "isolated init",
+        "isolated install firefox",
+        "isolated install steam",
+        "isolated exec firefox -- bash",
+        "isolated search browser",
+        "isolated info gimp",
+        "isolated snapshot fedora",
+        "isolated rollback fedora",
+        "isolated autoremove",
+    ]
+    let ne: int = array_len(examples)
+    let mut j: int = 0
+    while j < ne is
+        write("    " + dim(examples[j]))
+        j += 1
+    end
+    write("")
+    write("  Use " + cyan("isolated <command> --help") + " for command-specific help.")
+    write("")
+end
