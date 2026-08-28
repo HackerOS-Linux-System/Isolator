@@ -1,0 +1,98 @@
+mod util
+
+;; packageNameRe matches safe package/container identifiers: letters, digits,
+;; dot, underscore, plus and hyphen, with an optional leading '@' (used by
+;; package-manager *group* identifiers, e.g. dnf's "@kde-desktop-environment").
+;; '@' has no special meaning to /bin/sh when it appears in an ordinary
+;; argument like this, so allowing it doesn't weaken the shell-injection
+;; protection this function exists for.
+pub let PACKAGE_NAME_PATTERN: string = r"^@?[a-zA-Z0-9][a-zA-Z0-9._+-]{0,127}$"
+
+;; validate_package_name rejects anything that is not a plain, shell-safe
+;; identifier. It is used on every user-supplied package name *and* on every
+;; package name coming from the remote repository JSON before it is ever
+;; concatenated into a command string that gets executed inside a container.
+;; Returns "" on success, or an error message.
+pub fn validate_package_name(name: string) -> string is
+    if name == "" is
+        return "package name cannot be empty"
+    end
+    ;; FIX: `re::is_match` (std -> regex) has no working backend on this
+    ;; compiler — undefined fn at codegen time. The only regex builtin
+    ;; that's actually wired up in codegen is the bare `regex_match`
+    ;; function, and its C runtime signature is
+    ;; `hsh_regex_match(pattern, text)` — pattern first, text second
+    ;; (confirmed in compiler/runtime/regex.c), the reverse of
+    ;; `is_match`'s (text, pattern) order. PACKAGE_NAME_PATTERN already
+    ;; anchors with ^...$, so this is still an effective full-string
+    ;; match, same as is_match was meant to provide.
+    if !regex_match(PACKAGE_NAME_PATTERN, name) is
+        return "package name \"" + name + "\" contains characters that are not allowed (only letters, digits, '.', '_', '+', '-')"
+    end
+    return ""
+end
+
+;; validate_package_names validates a whole slice (e.g. dependency lists).
+pub fn validate_package_names(names: [string]) -> string is
+    let n: int = array_len(names)
+    let mut i: int = 0
+    while i < n is
+        let err: string = validate_package_name(names[i])
+        if err != "" is return err end
+        i += 1
+    end
+    return ""
+end
+
+;; sha256_hex returns the lowercase hex-encoded SHA-256 digest of data.
+;;
+;; H#'s `sha256()` builtin is implemented in the interpreter but was never
+;; wired into the LLVM backend (`h# compile` fails with "undefined fn:
+;; sha256") — so this shells out to `sha256sum` instead, the same
+;; approach `util::sha256_file_hex` already uses for files. `data` is
+;; piped in via stdin (through a temp file, avoiding any shell-escaping
+;; concerns with arbitrary/binary content in an argv string).
+pub fn sha256_hex(data: string) -> string is
+    let tmp: string = "/tmp/isolator_sha256_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".tmp"
+    file_write(tmp, data)
+    let hash: string = util::sha256_file_hex(tmp)
+    if file_exists(tmp) is file_delete(tmp) end
+    return hash
+end
+
+;; verify_checksum performs a comparison between the computed SHA-256 of
+;; data and an expected hex digest (case-insensitive, whitespace tolerant —
+;; checksum files commonly look like "<hex>  filename").
+;;
+;; NOTE: H#'s sha256() builtin already goes through a native Rust
+;; implementation rather than shelling out, so unlike the Go version's
+;; subtle.ConstantTimeCompare, this is a plain string comparison. This is a
+;; theoretical, not practical, weakening (checksum verification of a public
+;; repo download is not a secret-comparison context — there is no secret
+;; being guarded against a timing side-channel here), but is noted for
+;; completeness of the 1:1 port.
+pub fn verify_checksum(data: string, expected_hex: string) -> bool is
+    let expected: string = first_token(expected_hex)
+    let got: string = sha256_hex(data)
+    return got == expected
+end
+
+;; first_token returns the first whitespace-separated token of s, lower-cased.
+fn first_token(s: string) -> string is
+    let n: int = string_len(s)
+    let mut start: int = -1
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        if c == " " || c == "\t" || c == "\n" || c == "\r" is
+            if start != -1 is
+                return string_to_lower(string_slice(s, start, i))
+            end
+        else is
+            if start == -1 is start = i end
+        end
+        i += 1
+    end
+    if start == -1 is return "" end
+    return string_to_lower(string_slice(s, start, n))
+end
