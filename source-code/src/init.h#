@@ -1,0 +1,44 @@
+mod helpers
+mod config
+mod util
+mod gui
+mod repo
+
+pub fn handle_init() is
+    helpers::print_info("Initializing Isolator...")
+
+    if !helpers::ensure_config_dir() is
+        helpers::print_error("Failed to create config directory")
+        return
+    end
+
+    if !file_exists(config::config_file_path()) is
+        config::save_config(config::default_config())
+        helpers::print_success("Default config created at " + config::config_file_path())
+    else is
+        helpers::print_info("Config already exists at " + config::config_file_path() + " (untouched)")
+    end
+
+    let bin_dir: string = util::path_join(util::home_dir(), ".local/bin")
+    if !util::dir_create_all(bin_dir) is
+        helpers::print_error("Failed to create " + bin_dir)
+    else is
+        helpers::print_success("Wrapper directory ready: " + bin_dir)
+    end
+    if !string_contains(env_get("PATH"), bin_dir) is
+        helpers::print_warn(bin_dir + " is not on your PATH — add this to your shell rc:")
+        write(dim("  export PATH=\"$HOME/.local/bin:$PATH\""))
+    end
+
+    if util::dir_create_all(gui::desktop_entry_dir()) is
+        helpers::print_success("Application launcher directory ready: " + gui::desktop_entry_dir())
+    end
+
+    ;; Pre-flight the repo cache so the very first `install` is instant.
+    if repo::load_repo(false) is
+        helpers::print_success("Repository list is ready")
+    end
+
+    gui::print_gpu_report(util::current_uid())
+    helpers::print_success("Isolator is ready. Try: isolator search <term>")
+end
