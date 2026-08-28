@@ -1,0 +1,186 @@
+mod types
+
+;; classify_libs splits a package's declared Libs into two groups:
+;;
+;;   - catalog_libs: entries that are themselves real catalog packages with
+;;     kind == "lib" — Isolator knows about these as first-class dependency
+;;     objects (they show up in `isolator info`'s reverse lookup, and
+;;     `isolator remove` treats them as tracked dependencies rather than
+;;     opaque strings).
+;;   - raw_libs: everything else — plain distro package-manager names (like
+;;     "libnss3" on Debian) that aren't cataloged separately. These still
+;;     get installed exactly as before; they're just not "known" to
+;;     Isolator as independent objects.
+;;
+;; Both groups get installed identically (they're real package-manager
+;; names either way) — this function only affects what Isolator
+;; *understands* about the dependency, not what gets run.
+pub fn classify_libs(info: PackageInfo, repo_packages: [PackageInfo]) -> ([PackageInfo], [string]) is
+    let mut catalog_libs: [PackageInfo] = []
+    let mut raw_libs:     [string]      = []
+
+    let nl: int = array_len(info.libs)
+    let mut i: int = 0
+    while i < nl is
+        let lib_name: string = info.libs[i]
+        let __dstr54: (bool, PackageInfo) = find_lib_by_name(repo_packages, lib_name)
+        let found: bool = __dstr54.0
+        let lib: PackageInfo = __dstr54.1
+        if found is
+            catalog_libs = array_push(catalog_libs, lib)
+        else is
+            raw_libs = array_push(raw_libs, lib_name)
+        end
+        i += 1
+    end
+    return (catalog_libs, raw_libs)
+end
+
+fn find_lib_by_name(repo_packages: [PackageInfo], name: string) -> (bool, PackageInfo) is
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        let p: PackageInfo = repo_packages[i]
+        if p.kind == "lib" && p.name == name is return (true, p) end
+        i += 1
+    end
+    return (false, PackageInfo { name: "", distro: "", kind: "", libs: [] })
+end
+
+;; reverse_lib_dependents returns the names of every catalog package whose
+;; Libs list references lib_name, restricted to the same distro (a Debian
+;; package depending on a same-named Arch lib entry would be a false
+;; positive otherwise).
+pub fn reverse_lib_dependents(lib_name: string, lib_distro: string, repo_packages: [PackageInfo]) -> [string] is
+    let mut dependents: [string] = []
+    let n: int = array_len(repo_packages)
+    let mut i: int = 0
+    while i < n is
+        let p: PackageInfo = repo_packages[i]
+        if p.distro == lib_distro is
+            let nl: int = array_len(p.libs)
+            let mut j: int = 0
+            while j < nl is
+                if p.libs[j] == lib_name is
+                    dependents = array_push(dependents, p.name)
+                    j = nl  ;; break
+                end
+                j += 1
+            end
+        end
+        i += 1
+    end
+    return dependents
+end
+
+;; resolve_transitive_libs walks the full dependency graph starting from
+;; root's Libs, following catalog "lib" entries that themselves declare
+;; further Libs (a lib depending on another lib — e.g. a font-rendering lib
+;; pulling in freetype, which pulls in zlib), until no new libs are found.
+;;
+;; There's no version concept anywhere in the catalog (see types.h#'s
+;; PackageInfo — packages are just names), so "conflict" here can't mean a
+;; version clash the way it would in a real package manager. What it *can*
+;; still mean, and does: a transitively-required lib cataloged for a
+;; different distro than root — installing it verbatim into root's
+;; container would almost certainly fail, and checking only one level deep
+;; (as the original classify_libs alone did) misses it if the mismatch
+;; shows up two or three hops into the graph instead of the first.
+;;
+;; Returns the de-duplicated set of resolved catalog libs (discovery
+;; order), any dependency cycles found (each as the "a -> b -> a"-style
+;; path that closed the loop, joined with " -> "), and any cross-distro
+;; mismatches found at any depth.
+pub fn resolve_transitive_libs(root: PackageInfo, repo_packages: [PackageInfo]) -> ([PackageInfo], [string], [PackageInfo]) is
+    let mut resolved:     [PackageInfo] = []
+    let mut cycles:       [string]      = []
+    let mut cross_distro: [PackageInfo] = []
+    let mut visited:      [string]      = []
+
+    let nl: int = array_len(root.libs)
+    let mut i: int = 0
+    while i < nl is
+        let result = visit_lib(root.libs[i], [root.name], root, repo_packages, resolved, cycles, cross_distro, visited)
+        resolved     = result.v0
+        cycles       = result.v1
+        cross_distro = result.v2
+        visited      = result.v3
+        i += 1
+    end
+    return (resolved, cycles, cross_distro)
+end
+
+struct VisitResult is
+    pub v0: [PackageInfo]
+    pub v1: [string]
+    pub v2: [PackageInfo]
+    pub v3: [string]
+end
+
+fn visit_lib(name: string, path: [string], root: PackageInfo, repo_packages: [PackageInfo],
+             resolved0: [PackageInfo], cycles0: [string], cross_distro0: [PackageInfo], visited0: [string]) -> VisitResult is
+    let mut resolved:     [PackageInfo] = resolved0
+    let mut cycles:       [string]      = cycles0
+    let mut cross_distro: [PackageInfo] = cross_distro0
+    let mut visited:      [string]      = visited0
+
+    let np: int = array_len(path)
+    let mut pi: int = 0
+    while pi < np is
+        if path[pi] == name is
+            let mut path_str: string = ""
+            let mut pj: int = 0
+            while pj < np is
+                if pj > 0 is path_str = path_str + " -> " end
+                path_str = path_str + path[pj]
+                pj += 1
+            end
+            path_str = path_str + " -> " + name
+            cycles = array_push(cycles, path_str)
+            return VisitResult { v0: resolved, v1: cycles, v2: cross_distro, v3: visited }
+        end
+        pi += 1
+    end
+
+    let __dstr55: (bool, PackageInfo) = find_lib_by_name(repo_packages, name)
+    let found: bool = __dstr55.0
+    let lib: PackageInfo = __dstr55.1
+    if !found is
+        ;; a raw, non-cataloged lib string — nothing further to walk
+        return VisitResult { v0: resolved, v1: cycles, v2: cross_distro, v3: visited }
+    end
+    if array_contains_str(visited, name) is
+        return VisitResult { v0: resolved, v1: cycles, v2: cross_distro, v3: visited }
+    end
+    visited = array_push(visited, name)
+
+    if lib.distro != root.distro is
+        cross_distro = array_push(cross_distro, lib)
+    end
+    resolved = array_push(resolved, lib)
+
+    let mut next_path: [string] = array_push(path, name)
+
+    let nsub: int = array_len(lib.libs)
+    let mut si: int = 0
+    while si < nsub is
+        let result = visit_lib(lib.libs[si], next_path, root, repo_packages, resolved, cycles, cross_distro, visited)
+        resolved     = result.v0
+        cycles       = result.v1
+        cross_distro = result.v2
+        visited      = result.v3
+        si += 1
+    end
+
+    return VisitResult { v0: resolved, v1: cycles, v2: cross_distro, v3: visited }
+end
+
+fn array_contains_str(a: [string], s: string) -> bool is
+    let n: int = array_len(a)
+    let mut i: int = 0
+    while i < n is
+        if a[i] == s is return true end
+        i += 1
+    end
+    return false
+end
