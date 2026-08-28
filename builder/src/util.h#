@@ -337,13 +337,25 @@ pub fn http_get(url: string, user_agent: string) -> (int, string) is
     let tmp: string = "/tmp/isolator_http_" + to_string(proc_id()) + "_" + to_string(time_ms()) + ".body"
     let cmd: string =
         "curl -s -L --max-time 30 --max-filesize 33554432 -A " + shell_quote(user_agent) +
-        " -o " + shell_quote(tmp) + " -w '%{http_code}' " + shell_quote(url)
+        " -o " + shell_quote(tmp) + " -w '%{{http_code}}' " + shell_quote(url)
     let __dstr47: (int, string) = run_capture(cmd)
     let rc: int = __dstr47.0
     let code_str: string = __dstr47.1
     let body: string = if file_exists(tmp) then file_read(tmp) else "" 
     if file_exists(tmp) is file_delete(tmp) end
-    if rc != 0 is return (-1, "") end
+    if rc != 0 is
+        ;; DEBUG: every possible transport failure (real DNS/connect
+        ;; problem, curl missing from PATH, a shell-quoting mistake, ...)
+        ;; used to collapse into one opaque "transport error" with no way
+        ;; to tell which. Surface the raw system() status and whatever
+        ;; curl actually wrote (its `-w` output and/or its stderr, both
+        ;; captured together by run_capture) so a real failure is
+        ;; diagnosable from one run instead of guessed at over several.
+        write("  \x1b[2m[debug] http_get: system() exit status " + to_string(rc) + "\x1b[0m")
+        write("  \x1b[2m[debug] command: " + cmd + "\x1b[0m")
+        write("  \x1b[2m[debug] curl said: " + string_trim(code_str) + "\x1b[0m")
+        return (-1, "")
+    end
     let code: int = string_to_int(string_trim(code_str))
     return (code, body)
 end
