@@ -1,0 +1,106 @@
+pub struct Distro is
+    pub cont_name:   string
+    pub image:       string
+    pub distro_key:  string   ;; used to dispatch adapter_* functions below
+    ;; InitSystem tells Isolator whether this distro's container image
+    ;; actually boots systemd as PID 1. "de" and "system" packages request
+    ;; --systemd=always + cgroup access; that flag is meaningless (and
+    ;; actively misleading) on a distro whose default image has no systemd
+    ;; at all — Slackware being the notable example, which traditionally
+    ;; ships BSD-style /etc/rc.d init scripts instead.
+    pub init_system: string   ;; "systemd" | "sysvinit" | "none"
+end
+
+pub fn adapter_install(distro_key: string) -> string is
+    if distro_key == "debian" || distro_key == "ubuntu" is return "apt-get install -y" end
+    if distro_key == "fedora" is return "dnf install -y" end
+    if distro_key == "archlinux" || distro_key == "blackarch" is return "pacman -S --noconfirm" end
+    if distro_key == "opensuse" is return "zypper install -y" end
+    if distro_key == "slackware" is return "slackpkg install" end
+    return ""
+end
+
+pub fn adapter_remove(distro_key: string) -> string is
+    if distro_key == "debian" || distro_key == "ubuntu" is return "apt-get remove -y" end
+    if distro_key == "fedora" is return "dnf remove -y" end
+    if distro_key == "archlinux" || distro_key == "blackarch" is return "pacman -R --noconfirm" end
+    if distro_key == "opensuse" is return "zypper remove -y" end
+    if distro_key == "slackware" is return "slackpkg remove" end
+    return ""
+end
+
+pub fn adapter_update(distro_key: string) -> string is
+    if distro_key == "debian" || distro_key == "ubuntu" is return "apt-get update && apt-get upgrade -y" end
+    if distro_key == "fedora" is return "dnf update -y" end
+    if distro_key == "archlinux" || distro_key == "blackarch" is return "pacman -Syu --noconfirm" end
+    if distro_key == "opensuse" is return "zypper dup -y" end
+    if distro_key == "slackware" is return "slackpkg update && slackpkg upgrade-all" end
+    return ""
+end
+
+;; InitSystem tells Isolator... (initial setup command after container creation)
+pub fn adapter_init(distro_key: string) -> string is
+    if distro_key == "debian" || distro_key == "ubuntu" is return "apt-get update" end
+    if distro_key == "fedora" is return "dnf check-update; true" end
+    if distro_key == "archlinux" || distro_key == "blackarch" is return "pacman -Sy" end
+    if distro_key == "opensuse" is return "zypper refresh" end
+    if distro_key == "slackware" is return "slackpkg update" end
+    return ""
+end
+
+pub fn all_distro_keys() -> [string] is
+    return ["debian", "fedora", "archlinux", "opensuse", "ubuntu", "slackware", "blackarch"]
+end
+
+;; lookup_distro returns (found, Distro) for a given key — the H# analogue
+;; of `Distros[key]` plus the "ok" boolean from Go's comma-ok map lookup.
+pub fn lookup_distro(distro_key: string) -> (bool, Distro) is
+    if distro_key == "debian" is
+        return (true, Distro { cont_name: "debian-testing", image: "debian:testing", distro_key: "debian", init_system: "systemd" })
+    end
+    if distro_key == "fedora" is
+        return (true, Distro { cont_name: "fedora", image: "registry.fedoraproject.org/fedora:latest", distro_key: "fedora", init_system: "systemd" })
+    end
+    if distro_key == "archlinux" is
+        return (true, Distro { cont_name: "archlinux", image: "archlinux:latest", distro_key: "archlinux", init_system: "systemd" })
+    end
+    if distro_key == "opensuse" is
+        return (true, Distro { cont_name: "opensuse-tumbleweed", image: "registry.opensuse.org/opensuse/tumbleweed:latest", distro_key: "opensuse", init_system: "systemd" })
+    end
+    if distro_key == "ubuntu" is
+        return (true, Distro { cont_name: "ubuntu", image: "ubuntu:latest", distro_key: "ubuntu", init_system: "systemd" })
+    end
+    if distro_key == "slackware" is
+        ;; The official slackware64-current image has no systemd — it boots
+        ;; (if it boots an init at all, since containers normally skip PID 1
+        ;; init entirely) via the classic BSD-style /etc/rc.d scripts. "de"
+        ;; and "system" packages targeting this distro get a clear warning
+        ;; instead of a silently-ignored --systemd=always flag.
+        return (true, Distro { cont_name: "slackware", image: "slackware64-current", distro_key: "slackware", init_system: "sysvinit" })
+    end
+    if distro_key == "blackarch" is
+        ;; BlackArch: official image, ~2600 pentest/cybersec tools available
+        ;; via pacman once installed. Needs --security-opt seccomp=unconfined,
+        ;; which container.h# adds automatically for this distro (see
+        ;; needs_seccomp_unconfined in container.h#).
+        return (true, Distro { cont_name: "blackarch", image: "blackarchlinux/blackarch:latest", distro_key: "blackarch", init_system: "systemd" })
+    end
+    return (false, Distro { cont_name: "", image: "", distro_key: "", init_system: "" })
+end
+
+;; all_container_base_names — equivalent of the Go `Containers` slice built
+;; in init().
+pub fn all_container_base_names() -> [string] is
+    let keys: [string] = all_distro_keys()
+    let mut names: [string] = []
+    let n: int = array_len(keys)
+    let mut i: int = 0
+    while i < n is
+        let __dstr92: (bool, Distro) = lookup_distro(keys[i])
+        let ok: bool = __dstr92.0
+        let d: Distro = __dstr92.1
+        if ok is names = array_push(names, d.cont_name) end
+        i += 1
+    end
+    return names
+end
