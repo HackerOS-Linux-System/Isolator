@@ -1,0 +1,44 @@
+mod security
+mod helpers_state
+mod container
+mod exec
+mod helpers
+mod constants
+mod types
+
+pub fn handle_exec(pkg: string, cmd_args: [string]) is
+    let name_err: string = security::validate_package_name(pkg)
+    if name_err != "" is
+        helpers::print_error(name_err)
+        return
+    end
+
+    let installed: [InstalledPackage] = helpers_state::load_installed()
+    let __dstr84: (bool, InstalledPackage) = helpers_state::find_installed(installed, pkg)
+    let found: bool = __dstr84.0
+    let ip: InstalledPackage = __dstr84.1
+    if !found is
+        helpers::print_error("Package '" + pkg + "' is not installed")
+        return
+    end
+
+    if !container::ensure_container_running(ip.cont) is
+        helpers::print_error("Failed to start container '" + ip.cont + "'")
+        return
+    end
+
+    let mut command: string = pkg
+    let mut rest: [string] = []
+    if array_len(cmd_args) > 0 is
+        command = cmd_args[0]
+        let n: int = array_len(cmd_args)
+        let mut i: int = 1
+        while i < n is rest = array_push(rest, cmd_args[i]) i += 1 end
+    end
+
+    let mut args: [string] = ["exec", "-it", ip.cont, command]
+    args = array_concat(args, rest)
+    if !exec::exec_command(constants::PODMAN_BIN, args) is
+        helpers::print_error("Command failed inside container")
+    end
+end
