@@ -2,7 +2,7 @@
 -> name    => isolator-workspace
 -> version => 0.7
 -> mode    => standard
--> members => ["source-code", "isolated", "builder", "daemon"]
+-> members => ["source-code", "isolated", "builder", "daemon", "store"]
 
 [build]
 -> parallel => true
