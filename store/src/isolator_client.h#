@@ -1,0 +1,263 @@
+use "std -> fs"       from "fs"
+use "std -> env"      from "env"
+use "std -> path"     from "path"
+use "std -> process"  from "process"
+use "std -> strings"  from "strings"
+use "std -> collections" from "col"
+
+mod package
+
+fn config_dir() -> string is
+    return path::join(path::join(env::home(), ".config"), "isolator")
+end
+
+pub fn catalog_path() -> string is
+    return path::join(config_dir(), "package-list.json")
+end
+
+fn installed_path() -> string is
+    return path::join(config_dir(), "installed.hk")
+end
+
+;; check_available returns "" if `isolator` resolves on PATH, or an error
+;; message to show the user if it doesn't — Store is useless without it, so
+;; this is checked once at startup. ("" as the "no error" sentinel matches
+;; how the rest of H#'s own std/*.h# spells absence, e.g. std/env.h#'s
+;; `get_or`, rather than a nullable `string?` — H# has no such type.)
+pub fn check_available() -> string is
+    let found: string = process::which("isolator")
+    if found == "" is
+        return "The 'isolator' command was not found on PATH. Install Isolator first: https://github.com/HackerOS-Linux-System/Isolator"
+    end
+    return ""
+end
+
+;; ── package-list.json reading ────────────────────────────────────────────
+;; See the module doc comment above: std -> json has no array support, so
+;; this is a small hand-rolled scanner good for exactly one shape — a
+;; top-level JSON array of flat objects with string fields "name"/"distro"/
+;; "type" and a string-array field "libs". It is not a general JSON parser.
+
+;; Splits a "[ {...}, {...}, ... ]" text into the individual "{...}" object
+;; substrings, tracking brace depth and skipping over quoted strings (so a
+;; "}" or "," inside a package name can't desynchronize it).
+fn split_top_level_objects(raw: string) -> [string] is
+    let n: int = raw.len()
+    let mut objects:  [string] = []
+    let mut i:        int = 0
+    let mut depth:    int = 0
+    let mut obj_start: int = 0
+    let mut in_string: bool = false
+    while i < n is
+        let ch: string = raw[i..i + 1]
+        let mut step: int = 1
+        if in_string is
+            if ch == "\\" is
+                step = 2
+            else if ch == "\"" is
+                in_string = false
+            end
+        else is
+            if ch == "\"" is
+                in_string = true
+            else if ch == "{" is
+                if depth == 0 is obj_start = i end
+                depth += 1
+            else if ch == "}" is
+                depth -= 1
+                if depth == 0 is
+                    objects.push(raw[obj_start..i + 1])
+                end
+            end
+        end
+        i += step
+    end
+    return objects
+end
+
+;; Extracts the string value of "key": "..." from a single flat JSON object
+;; substring. "" if the key is absent or its value isn't a JSON string.
+fn json_field_string(obj: string, key: string) -> string is
+    let needle: string = "\"" + key + "\""
+    let idx: int = strings::index_of(obj, needle)
+    if idx == -1 is return "" end
+
+    let after_key: string = obj[idx + needle.len()..obj.len()]
+    let colon_idx: int = strings::index_of(after_key, ":")
+    if colon_idx == -1 is return "" end
+
+    let after_colon: string = strings::trim_start(after_key[colon_idx + 1..after_key.len()])
+    if after_colon.len() == 0 || after_colon[0..1] != "\"" is return "" end
+
+    let n: int = after_colon.len()
+    let mut i: int = 1
+    let mut result: string = ""
+    while i < n is
+        let ch: string = after_colon[i..i + 1]
+        if ch == "\\" && i + 1 < n is
+            result = result + after_colon[i + 1..i + 2]
+            i += 2
+        else if ch == "\"" is
+            return result
+        else is
+            result = result + ch
+            i += 1
+        end
+    end
+    return result
+end
+
+;; Extracts the string values of a "key": ["a", "b", ...] array field from a
+;; single flat JSON object substring. [] if the key is absent or not an
+;; array.
+fn json_field_string_array(obj: string, key: string) -> [string] is
+    let mut result: [string] = []
+    let needle: string = "\"" + key + "\""
+    let idx: int = strings::index_of(obj, needle)
+    if idx == -1 is return result end
+
+    let after_key: string = obj[idx + needle.len()..obj.len()]
+    let colon_idx: int = strings::index_of(after_key, ":")
+    if colon_idx == -1 is return result end
+
+    let after_colon: string = strings::trim_start(after_key[colon_idx + 1..after_key.len()])
+    if after_colon.len() == 0 || after_colon[0..1] != "[" is return result end
+
+    ;; Find the matching closing bracket (again tracking quotes, so a
+    ;; library name can't contain a stray "]" and desync this).
+    let n: int = after_colon.len()
+    let mut i: int = 1
+    let mut depth: int = 1
+    let mut in_string: bool = false
+    let mut bracket_end: int = n
+    while i < n is
+        let ch: string = after_colon[i..i + 1]
+        if in_string is
+            if ch == "\\" is
+                i += 1
+            else if ch == "\"" is
+                in_string = false
+            end
+        else is
+            if ch == "\"" is
+                in_string = true
+            else if ch == "[" is
+                depth += 1
+            else if ch == "]" is
+                depth -= 1
+                if depth == 0 is
+                    bracket_end = i
+                    break
+                end
+            end
+        end
+        i += 1
+    end
+
+    let inner: string = after_colon[1..bracket_end]
+    let m: int = inner.len()
+    let mut j: int = 0
+    while j < m is
+        let ch2: string = inner[j..j + 1]
+        if ch2 == "\"" is
+            let mut val: string = ""
+            j += 1
+            while j < m && inner[j..j + 1] != "\"" is
+                if inner[j..j + 1] == "\\" && j + 1 < m is
+                    val = val + inner[j + 1..j + 2]
+                    j += 2
+                else is
+                    val = val + inner[j..j + 1]
+                    j += 1
+                end
+            end
+            result.push(val)
+            j += 1
+        else is
+            j += 1
+        end
+    end
+    return result
+end
+
+;; Result of load_catalog — H# has no exceptions/Result<T,E>, so this follows
+;; the same ok/value/error-field shape std -> async's `TimeoutResult` uses.
+struct CatalogResult is
+    pub ok:       bool
+    pub packages: [package::Package]
+    pub error:    string
+end
+
+;; load_catalog parses the same package-list.json Isolator itself downloads
+;; and caches — Store reads it directly rather than reimplementing (or
+;; screen-scraping) `isolator search`, since the catalog is just plain JSON
+;; already. If the cache doesn't exist yet, the caller should run
+;; `isolator refresh` first and retry.
+pub fn load_catalog() -> CatalogResult is
+    if !fs::exists(catalog_path()) is
+        return CatalogResult { ok: false, packages: [], error: "No cached catalog yet — press Refresh first." }
+    end
+
+    let raw:     string = fs::read(catalog_path())
+    let trimmed: string = strings::trim(raw)
+    if trimmed.len() == 0 || trimmed[0..1] != "[" is
+        return CatalogResult { ok: false, packages: [], error: "package-list.json is not a JSON array — is it corrupted?" }
+    end
+
+    let objs: [string] = split_top_level_objects(trimmed)
+    let mut result: [package::Package] = []
+    for obj in objs is
+        let name: string = json_field_string(obj, "name")
+        if name == "" is continue end
+        let distro:      string   = json_field_string(obj, "distro")
+        let mut type_:   string   = json_field_string(obj, "type")
+        if type_ == "" is type_ = "cli" end
+        let libs: [string] = json_field_string_array(obj, "libs")
+        result.push(package::new_package(name, distro, type_, libs))
+    end
+    return CatalogResult { ok: true, packages: result, error: "" }
+end
+
+;; load_installed_names parses installed.hk just enough to get the set of
+;; currently-installed package names — a full .hk parser (like the one in
+;; isolator's own src/hk.go) is overkill here; Store only ever needs
+;; "is X installed?" for exactly one section ([packages]) whose sub-map keys
+;; ARE the package names, at nesting depth 1 ("-> name", not "--> field").
+pub fn load_installed_names() -> col::HashSet is
+    let mut names: col::HashSet = col::HashSet::new()
+    let ipath: string = installed_path()
+    if !fs::exists(ipath) is
+        return names
+    end
+
+    let mut in_packages_section: bool = false
+    for raw_line in fs::read_lines(ipath) is
+        let line: string = strings::trim(raw_line)
+        if line.len() == 0 || line[0..1] == "!" is continue end
+
+        if line[0..1] == "[" && line[line.len() - 1..line.len()] == "]" is
+            in_packages_section = (line == "[packages]")
+            continue
+        end
+        if !in_packages_section is continue end
+
+        ;; depth-1 entries look like "-> firefox-esr" (no "=>": it's an
+        ;; inline submap declarator, i.e. a package name).
+        if line.starts_with("-> ") && !line.starts_with("-->") && !line.contains("=>") is
+            names.insert(strings::trim(line[3..line.len()]))
+        end
+    end
+    return names
+end
+
+;; run_command execs `isolator <args>` and returns everything it printed to
+;; stdout (see the module doc comment above for why this is blocking rather
+;; than a streamed line-by-line callback). Returns null-free: on launch
+;; failure the returned text explains what went wrong instead of throwing.
+pub fn run_command(args: [string]) -> string is
+    let missing: string = check_available()
+    if missing != "" is
+        return "Failed to launch isolator: " + missing
+    end
+    return process::run_args("isolator", args)
+end
