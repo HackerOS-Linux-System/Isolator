@@ -232,4 +232,3 @@ shorthand, `! comments`, and `${section.key}` / `${env:VAR}` interpolation
 with cycle detection are all supported. The repository's own
 `package-list.json` stays JSON, since it's a plain HTTP-distributed
 interchange format rather than local Isolator state.
-
