@@ -1,0 +1,25 @@
+use "std -> strings" from "strings"
+
+struct Package is
+    pub name:   string
+    pub distro: string
+    pub type_:  string   ;; "cli" | "gui" | "de" | "lib" | "system"
+    pub libs:   [string]
+end
+
+;; Constructor function — mirrors the `Package(name, distro, type_, libs)`
+;; constructor in package.vala. Cross-module callers use this instead of a
+;; qualified struct literal (`package::new_package(...)`), matching the
+;; convention every other H# library in this project (std, gtk) already uses
+;; for its own types (e.g. `gtk::new_window(...)`).
+pub fn new_package(name: string, distro: string, type_: string, libs: [string]) -> Package is
+    return Package { name: name, distro: distro, type_: type_, libs: libs }
+end
+
+impl Package is
+    ;; Lower-cased "name distro type" blob used for substring search —
+    ;; identical semantics to `Package.search_haystack()` in package.vala.
+    fn search_haystack(self) -> string is
+        return strings::to_lower(self.name + " " + self.distro + " " + self.type_)
+    end
+end
