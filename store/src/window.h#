@@ -1,0 +1,360 @@
+use "bytes -> gtk"       from "gtk"
+use "std -> strings"     from "strings"
+use "std -> collections" from "col"
+
+mod package
+mod isolator_client
+
+;; ── package row ───────────────────────────────────────────────────────────
+;; H# equivalent of package-row.vala's `Store.PackageRow : Gtk.ListBoxRow`.
+;; `gtk_list_box_append` (see gtk_ffi.h#) auto-wraps a plain child widget in
+;; its own GtkListBoxRow, so a plain `gtk::Box` is all that's needed here —
+;; there is no need for PackageRow to be its own row subclass. Which
+;; `package::Package` a given row corresponds to is tracked by window::run
+;; below (see the `visible` array), not stored on the widget itself.
+fn build_package_row(pkg: package::Package) -> gtk::Box is
+    let row: gtk::Box = gtk::new_box(gtk::orientation_vertical(), 2)
+    gtk::set_margin(row.handle, 6)
+
+    let name_label: gtk::Label = gtk::new_label(pkg.name)
+    name_label.set_xalign(0.0)
+    gtk::add_css_class(name_label.handle, "heading")
+
+    let meta_label: gtk::Label = gtk::new_label(pkg.distro + " · " + pkg.type_)
+    meta_label.set_xalign(0.0)
+    gtk::add_css_class(meta_label.handle, "dim-label")
+    gtk::add_css_class(meta_label.handle, "caption")
+
+    row.append(name_label.handle)
+    row.append(meta_label.handle)
+    return row
+end
+
+;; ── status placeholder ────────────────────────────────────────────────────
+;; H# equivalent of the AdwStatusPage used for `empty_status` in window.ui —
+;; see the module doc comment above for why this is a plain Box instead.
+;; Returns the two labels too, so the caller can update title/description
+;; later the same way Vala called `empty_status.set_title()`/
+;; `set_description()`.
+struct StatusPlaceholder is
+    pub box_:  gtk::Box
+    pub title: gtk::Label
+    pub desc:  gtk::Label
+end
+
+fn build_status_placeholder(title: string, desc: string) -> StatusPlaceholder is
+    let box_: gtk::Box = gtk::new_box(gtk::orientation_vertical(), 8)
+    gtk::set_margin(box_.handle, 24)
+    gtk::set_align(box_.handle, gtk::align_center(), gtk::align_center())
+    gtk::set_expand(box_.handle, true, true)
+
+    let title_label: gtk::Label = gtk::new_label(title)
+    gtk::add_css_class(title_label.handle, "title-1")
+    title_label.set_xalign(0.5)
+
+    let desc_label: gtk::Label = gtk::new_label(desc)
+    gtk::add_css_class(desc_label.handle, "dim-label")
+    desc_label.set_wrap(true)
+    desc_label.set_xalign(0.5)
+
+    box_.append(title_label.handle)
+    box_.append(desc_label.handle)
+
+    return StatusPlaceholder { box_: box_, title: title_label, desc: desc_label }
+end
+
+;; Rebuilds `results_list` for the given search query, exactly like
+;; `populate_results` in window.vala (including the same 200-row cap for
+;; the same reason: a broad/empty query on a 5000+ package catalog
+;; shouldn't build thousands of rows at once — narrowing the search is the
+;; expected way around it, not virtualized scrolling). Returns the packages
+;; actually shown, in the same order their rows were appended — window::run
+;; keeps this as `visible` so a later `ListBox` selection index can be
+;; turned back into a `Package`.
+fn populate_results(results_list: gtk::ListBox, catalog: [package::Package], query: string) -> [package::Package] is
+    results_list.clear()
+
+    let needle: string = strings::to_lower(strings::trim(query))
+    let mut out: [package::Package] = []
+    let mut shown: int = 0
+
+    for pkg in catalog is
+        if needle.len() > 0 && !pkg.search_haystack().contains(needle) is
+            continue
+        end
+        let row: gtk::Box = build_package_row(pkg)
+        results_list.append(row.handle)
+        out.push(pkg)
+        shown += 1
+        if shown >= 200 is
+            break
+        end
+    end
+    return out
+end
+
+;; ── main window / app wiring ──────────────────────────────────────────────
+;; Rewritten from `Store.IsolatorStoreWindow`'s constructor and every
+;; `on_*` handler in window.vala. Where Vala used GObject signals
+;; (`.connect(...)`), this uses `gtk::App`'s polling-based equivalents
+;; (`app.on_click`, `app.on_change`, `app.on_selection_change`, ...) — see
+;; bytes -> gtk's README for how those work under the hood.
+pub fn run() is
+    gtk::init()
+
+    let win: gtk::Window = gtk::new_window("Isolator Store", 920, 600)
+
+    let root: gtk::Box = gtk::new_box(gtk::orientation_vertical(), 0)
+
+    ;; ── top bar: search entry + refresh button (replaces AdwHeaderBar) ────
+    let top_bar: gtk::Box = gtk::new_box(gtk::orientation_horizontal(), 8)
+    gtk::set_margin(top_bar.handle, 10)
+
+    let search_entry: gtk::Entry = gtk::new_entry("Search packages (name, distro, type)…")
+    gtk::set_expand(search_entry.handle, true, false)
+
+    let refresh_button: gtk::Button = gtk::new_button("Refresh")
+
+    top_bar.append(search_entry.handle)
+    top_bar.append(refresh_button.handle)
+    root.append(top_bar.handle)
+
+    let top_sep: gtk::Separator = gtk::new_separator(gtk::orientation_horizontal())
+    root.append(top_sep.handle)
+
+    ;; ── content: sidebar list (left) + detail pane (right) ────────────────
+    ;; (replaces the GtkPaned in window.ui — see the module doc comment)
+    let content: gtk::Box = gtk::new_box(gtk::orientation_horizontal(), 0)
+    gtk::set_expand(content.handle, true, true)
+
+    let results_list: gtk::ListBox = gtk::new_list_box()
+    results_list.set_selection_mode(gtk::selection_mode_single())
+    gtk::add_css_class(results_list.handle, "navigation-sidebar")
+
+    let sidebar_scroll: gtk::ScrolledWindow = gtk::new_scrolled_window()
+    sidebar_scroll.set_child(results_list.handle)
+    gtk::set_size(sidebar_scroll.handle, 280, -1)
+    gtk::set_expand(sidebar_scroll.handle, false, true)
+
+    let right: gtk::Box = gtk::new_box(gtk::orientation_vertical(), 12)
+    gtk::set_margin(right.handle, 18)
+    gtk::set_expand(right.handle, true, true)
+
+    let empty_status: StatusPlaceholder = build_status_placeholder(
+        "Isolator Store",
+        "Search for a package on the left, or press Refresh to (re)load the catalog."
+    )
+    gtk::set_expand(empty_status.box_.handle, true, true)
+
+    let detail_box: gtk::Box = gtk::new_box(gtk::orientation_vertical(), 12)
+    gtk::set_visible(detail_box.handle, false)
+
+    let detail_title: gtk::Label = gtk::new_label("")
+    detail_title.set_xalign(0.0)
+    gtk::add_css_class(detail_title.handle, "title-1")
+
+    let detail_meta: gtk::Label = gtk::new_label("")
+    detail_meta.set_xalign(0.0)
+    detail_meta.set_wrap(true)
+    gtk::add_css_class(detail_meta.handle, "dim-label")
+
+    let detail_libs: gtk::Label = gtk::new_label("")
+    detail_libs.set_xalign(0.0)
+    detail_libs.set_wrap(true)
+    gtk::set_visible(detail_libs.handle, false)
+
+    let actions_row: gtk::Box = gtk::new_box(gtk::orientation_horizontal(), 8)
+    let install_button: gtk::Button = gtk::new_button("Install")
+    gtk::add_css_class(install_button.handle, "suggested-action")
+    let remove_button: gtk::Button = gtk::new_button("Remove")
+    gtk::add_css_class(remove_button.handle, "destructive-action")
+    let isolated_check: gtk::CheckButton = gtk::new_check_button("Isolated container")
+    actions_row.append(install_button.handle)
+    actions_row.append(remove_button.handle)
+    actions_row.append(isolated_check.handle)
+
+    let status_label: gtk::Label = gtk::new_label("")
+    status_label.set_xalign(0.0)
+    gtk::add_css_class(status_label.handle, "dim-label")
+    gtk::add_css_class(status_label.handle, "caption")
+
+    let log_view: gtk::TextView = gtk::new_text_view()
+    let log_scroll: gtk::ScrolledWindow = gtk::new_scrolled_window()
+    log_scroll.set_child(log_view.handle)
+    gtk::add_css_class(log_scroll.handle, "card")
+    gtk::set_expand(log_scroll.handle, true, true)
+
+    detail_box.append(detail_title.handle)
+    detail_box.append(detail_meta.handle)
+    detail_box.append(detail_libs.handle)
+    detail_box.append(actions_row.handle)
+    detail_box.append(status_label.handle)
+    detail_box.append(log_scroll.handle)
+
+    right.append(empty_status.box_.handle)
+    right.append(detail_box.handle)
+
+    content.append(sidebar_scroll.handle)
+    content.append(right.handle)
+    root.append(content.handle)
+
+    win.set_child(root.handle)
+
+    let app: gtk::App = gtk::new_app()
+
+    ;; ── state (mirrors the private fields on Store.IsolatorStoreWindow) ────
+    let mut catalog:             [package::Package] = []
+    let mut installed:           col::HashSet       = col::HashSet::new()
+    let mut visible:             [package::Package] = []
+    let mut selected_index:      int  = -1
+    let mut operation_running:   bool = false
+
+    ;; check_available() gate — mirrors the early-return in
+    ;; IsolatorStoreWindow's constructor when `isolator` isn't on PATH.
+    let missing: string = isolator_client::check_available()
+    let usable: bool = missing == ""
+    if !usable is
+        empty_status.title.set_text("isolator not found")
+        empty_status.desc.set_text(missing)
+        gtk::set_sensitive(search_entry.handle, false)
+        gtk::set_sensitive(refresh_button.handle, false)
+    end
+
+    ;; refresh_detail_buttons — mirrors `set_busy`'s button-sensitivity half
+    ;; (the log/status-message half is inlined where it's used below).
+    let refresh_detail_buttons: fn() -> void = || is
+        let has_selection: bool = selected_index != -1
+        let mut is_installed: bool = false
+        if has_selection is
+            is_installed = installed.contains(visible[selected_index].name)
+        end
+        gtk::set_sensitive(install_button.handle, has_selection && !is_installed && !operation_running)
+        gtk::set_sensitive(remove_button.handle,  has_selection && is_installed  && !operation_running)
+        gtk::set_sensitive(isolated_check.handle, has_selection && !is_installed && !operation_running)
+        gtk::set_sensitive(refresh_button.handle, !operation_running && usable)
+    end
+
+    ;; reload_state — mirrors `reload_state` in window.vala.
+    let reload_state: fn() -> void = || is
+        installed = isolator_client::load_installed_names()
+        let result: isolator_client::CatalogResult = isolator_client::load_catalog()
+        if result.ok is
+            catalog = result.packages
+            empty_status.desc.set_text("Search for a package on the left, or press Refresh to update the catalog.")
+        else is
+            catalog = []
+            empty_status.title.set_text("No catalog yet")
+            empty_status.desc.set_text(result.error)
+        end
+        visible = populate_results(results_list, catalog, search_entry.text())
+        refresh_detail_buttons()
+    end
+
+    if usable is
+        reload_state()
+    end
+
+    ;; on_row_selected — mirrors `on_row_selected` in window.vala.
+    app.on_selection_change(results_list, |idx: int| is
+        selected_index = idx
+        if idx == -1 is
+            gtk::set_visible(detail_box.handle, false)
+            gtk::set_visible(empty_status.box_.handle, true)
+            refresh_detail_buttons()
+            return
+        end
+
+        let pkg: package::Package = visible[idx]
+        gtk::set_visible(empty_status.box_.handle, false)
+        gtk::set_visible(detail_box.handle, true)
+        detail_title.set_text(pkg.name)
+        detail_meta.set_text(pkg.distro + "  ·  " + pkg.type_)
+
+        if pkg.libs.len() > 0 is
+            detail_libs.set_text("Dependencies: " + strings::join(pkg.libs, ", "))
+            gtk::set_visible(detail_libs.handle, true)
+        else is
+            gtk::set_visible(detail_libs.handle, false)
+        end
+
+        let is_installed: bool = installed.contains(pkg.name)
+        status_label.set_text(if is_installed then "Installed" else "Not installed")
+        log_view.set_text("")
+        refresh_detail_buttons()
+    end)
+
+    ;; on_search_changed — mirrors `on_search_changed` in window.vala.
+    app.on_change(search_entry, |text: string| is
+        visible = populate_results(results_list, catalog, text)
+    end)
+
+    ;; run_operation — mirrors `run_operation` in window.vala. Runs
+    ;; synchronously (see the module doc comment at the top of this file
+    ;; and isolator_client.h#'s doc comment for why): the window will not
+    ;; repaint or respond to input for as long as the underlying `isolator`
+    ;; command takes, and the full output appears in the log in one go
+    ;; when it finishes, rather than progressively.
+    let run_operation: fn([string], string) -> void = |args: [string], busy_message: string| is
+        operation_running = true
+        status_label.set_text(busy_message)
+        refresh_detail_buttons()
+        log_view.set_text("")
+
+        let output: string = isolator_client::run_command(args)
+        log_view.set_text(output)
+
+        operation_running = false
+        installed = isolator_client::load_installed_names()
+        if selected_index != -1 is
+            let pkg: package::Package = visible[selected_index]
+            let is_installed: bool = installed.contains(pkg.name)
+            status_label.set_text(if is_installed then "Installed" else "Not installed")
+        end
+        refresh_detail_buttons()
+    end
+
+    ;; on_refresh_clicked — mirrors `on_refresh_clicked` in window.vala.
+    app.on_click(refresh_button, || is
+        operation_running = true
+        status_label.set_text("Refreshing catalog…")
+        refresh_detail_buttons()
+        log_view.set_text("")
+
+        let output: string = isolator_client::run_command(["refresh"])
+        log_view.set_text(output)
+
+        operation_running = false
+        reload_state()
+        status_label.set_text("Catalog refreshed.")
+    end)
+
+    ;; on_install_clicked — mirrors `on_install_clicked` in window.vala.
+    app.on_click(install_button, || is
+        if selected_index == -1 is return end
+        let pkg: package::Package = visible[selected_index]
+        let mut args: [string] = ["install", pkg.name]
+        if isolated_check.is_active() is
+            args.push("--isolated")
+        end
+        run_operation(args, "Installing " + pkg.name + "…")
+    end)
+
+    ;; on_remove_clicked — mirrors `on_remove_clicked` in window.vala.
+    app.on_click(remove_button, || is
+        if selected_index == -1 is return end
+        let pkg: package::Package = visible[selected_index]
+        run_operation(["remove", pkg.name], "Removing " + pkg.name + "…")
+    end)
+
+    ;; There is no GApplication here (see the module doc comment), so
+    ;; unlike Adw.Application, closing the window would otherwise leave
+    ;; `app.run()`'s loop spinning forever — wire the window's close
+    ;; button to `app.quit()` explicitly, the same way gtk's own
+    ;; hello_window.h# example wires its "Wyjdz" button.
+    app.on_window_close(win, || is
+        app.quit()
+    end)
+
+    win.present()
+    app.run()
+end
