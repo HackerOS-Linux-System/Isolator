@@ -1,0 +1,5 @@
+mod window
+
+fn main() is
+    window::run()
+end
