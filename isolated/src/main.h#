@@ -1,6 +1,6 @@
 use "std -> env" from "env"
 
-extern dynamic [c] is
+extern static [c] is
     fn exit(code: int)
 end
 
