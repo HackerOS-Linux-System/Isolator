@@ -5,7 +5,7 @@ use "std -> env" from "env"
 ;; works, used below instead.
 mod jsonlite
 
-extern dynamic [c] is
+extern static [c] is
     fn exit(code: int)
 end
 
