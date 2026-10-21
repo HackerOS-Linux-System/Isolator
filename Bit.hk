@@ -1,9 +1,13 @@
-[workspace]
--> name    => isolator-workspace
--> version => 0.7
--> mode    => standard
--> members => ["source-code", "isolated", "builder", "daemon", "store"]
+[package]
+-> name        => isolator-workspace
+-> version     => 0.7.0
+-> description => Podman-based package manager for HackerOS (workspace)
+-> authors     => ["HackerOS-Linux-System"]
+-> license     => Apache-2.0
 
-[build]
--> parallel => true
--> cache    => build/cache/
+[workspace]
+-> members => [source-code, isolated, builder, daemon, store]
+-> mode    => standard
+
+[default-build]
+-> profile => release
