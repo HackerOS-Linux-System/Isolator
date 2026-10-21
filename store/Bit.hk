@@ -1,15 +1,33 @@
 [package]
 -> name        => isolator-store
--> version     => 0.7
--> description => GTK4 storefront for Isolator — search, install and remove packages via the isolator CLI (H# port)
--> author      => HackerOS Team <hackeros068@gmail.com>
+-> version     => 0.7.0
+-> description => GTK4 storefront for Isolator — search, install and remove packages via the isolator CLI
+-> authors     => ["HackerOS Team <hackeros068@gmail.com>"]
 -> license     => Apache-2.0
+-> lang        => h#
+
+[edition]
+-> edition   => 2026
+-> toolchain => 0.9
+
+[layout]
+-> src   => src
+-> entry => src/main.h#
 
 [build]
--> lang   => h#
--> entry  => src/main.h#
--> output => build/isolator-store
+-> link => static
 
-[deps]
--> gtk  => newest
--> libc => dynamic
+[default-build]
+-> profile => release
+
+[dependencies]
+-> gtk => newest
+
+[system-dependencies]
+-> gtk4
+--> pkg-config => gtk4
+--> apt        => libgtk-4-dev
+--> dnf        => gtk4-devel
+--> pacman     => gtk4
+--> zypper     => gtk4-devel
+--> apk        => gtk4.0-dev
