@@ -1,14 +1,21 @@
 [package]
 -> name        => isolator-daemon
--> version     => 0.1
--> description => Unattended scheduling daemon for Isolator maintenance commands (H# port)
--> author      => HackerOS-Linux-System
+-> version     => 0.1.0
+-> description => Unattended scheduling daemon for Isolator maintenance commands
+-> authors     => ["HackerOS-Linux-System"]
 -> license     => Apache-2.0
+-> lang        => h#
+
+[edition]
+-> edition   => 2026
+-> toolchain => 0.9
+
+[layout]
+-> src   => src
+-> entry => src/main.h#
 
 [build]
--> lang   => h#
--> entry  => src/main.h#
--> output => build/isolator-daemon
+-> link => static
 
-[deps]
--> libc => dynamic
+[default-build]
+-> profile => release
