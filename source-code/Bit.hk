@@ -1,14 +1,21 @@
 [package]
 -> name        => isolator
--> version     => 0.7
+-> version     => 0.7.0
 -> description => Podman-based package manager for HackerOS
--> author      => HackerOS-Linux-System
+-> authors     => ["HackerOS-Linux-System"]
 -> license     => Apache-2.0
+-> lang        => h#
+
+[edition]
+-> edition   => 2026
+-> toolchain => 0.9
+
+[layout]
+-> src   => src
+-> entry => src/main.h#
 
 [build]
--> lang   => h#
--> entry  => src/main.h#
--> output => build/isolator
+-> link => static
 
-[deps]
--> libc => dynamic
+[default-build]
+-> profile => release
