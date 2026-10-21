@@ -1,4 +1,4 @@
-extern dynamic [c] is
+extern static [c] is
     fn system(cmd: string) -> int
 end
 
